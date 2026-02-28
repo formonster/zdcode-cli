@@ -3,10 +3,12 @@ import { Command } from 'commander'
 import 'zx/globals'
 import packageJson from '../package.json'
 import temp from './modules/hello'
+import devModule from './modules/dev'
 
 const program = new Command()
 
 temp(program)
+devModule(program)
 
 program.version(
   packageJson.version,
