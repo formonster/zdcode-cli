@@ -97,10 +97,33 @@ export const defaultConfig = (projectRoot: string): DevConfig => {
   const projectName = path.basename(projectRoot)
   return {
     projectName,
-    worktreeRoot: path.join(ZDCODE_HOME, 'worktrees'),
+    worktreeRoot: path.join(projectRoot, '.worktrees'),
     baseBranch: getCurrentBranch(projectRoot) || 'main',
     codexCommand: 'codex exec --full-auto',
   }
+}
+
+
+export const ensureGitignoreEntry = (projectRoot: string, entry: string) => {
+  const gitignorePath = path.join(projectRoot, '.gitignore')
+  const normalized = entry.trim()
+
+  if (!fs.existsSync(gitignorePath)) {
+    fs.writeFileSync(gitignorePath, `${normalized}\n`)
+    return true
+  }
+
+  const content = fs.readFileSync(gitignorePath, 'utf-8')
+  const lines = content.split(/\r?\n/).map((line) => line.trim())
+  if (lines.includes(normalized) || lines.includes(normalized.replace(/\/$/, ''))) {
+    return false
+  }
+
+  const next = content.endsWith('\n') || content.length === 0
+    ? `${content}${normalized}\n`
+    : `${content}\n${normalized}\n`
+  fs.writeFileSync(gitignorePath, next)
+  return true
 }
 
 export const readSessions = (): SessionMeta[] => {

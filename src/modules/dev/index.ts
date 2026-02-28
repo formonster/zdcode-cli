@@ -6,6 +6,7 @@ import {
   defaultConfig,
   DevConfig,
   ensureDir,
+  ensureGitignoreEntry,
   ensureGlobalDirs,
   getGitRoot,
   isGitRepo,
@@ -30,6 +31,11 @@ const requireGitRepo = (cwd: string) => {
 }
 
 const ensureProjectConfig = (projectRoot: string) => {
+  const addedIgnore = ensureGitignoreEntry(projectRoot, '.worktrees/')
+  if (addedIgnore) {
+    console.log('ℹ️ 已自动在 .gitignore 中添加 .worktrees/')
+  }
+
   let config = readProjectConfig(projectRoot)
   if (!config) {
     config = defaultConfig(projectRoot)
@@ -60,7 +66,7 @@ const startTaskSession = (config: DevConfig, projectRoot: string, task: string) 
   const projectSlug = slugify(config.projectName)
   const sessionName = `zd-${projectSlug}-${taskSlug}-${stamp.slice(-6)}`.slice(0, 80)
 
-  const worktreeRoot = path.join(config.worktreeRoot, projectSlug)
+  const worktreeRoot = config.worktreeRoot
   ensureDir(worktreeRoot)
 
   const branch = `task/${taskSlug}-${stamp}`
@@ -99,11 +105,17 @@ const registerInit = (dev: Command) => {
       const cwd = process.cwd()
       requireGitRepo(cwd)
       const projectRoot = getGitRoot(cwd)
+      const addedIgnore = ensureGitignoreEntry(projectRoot, '.worktrees/')
+      if (addedIgnore) {
+        console.log('✅ 已在 .gitignore 中添加 .worktrees/')
+      }
+
       const exists = readProjectConfig(projectRoot)
       if (exists) {
         console.log('✅ 已存在 .zdcode/dev.json')
         return
       }
+
       const config = defaultConfig(projectRoot)
       writeProjectConfig(projectRoot, config)
       console.log('✅ 初始化成功: .zdcode/dev.json')
