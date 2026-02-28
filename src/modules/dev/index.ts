@@ -98,18 +98,18 @@ if [[ "${D}MR_ENABLED" == "1" ]]; then
   else
     git add -A
     git commit -m "chore: ${D}TASK" >/dev/null 2>&1 || true
-    git push -u origin "${D}BRANCH" 2>&1 | tee -a ${quote(logPath)}
+    PUSH_OUTPUT=$(git push -u origin "${D}BRANCH" 2>&1)
+    echo "${D}PUSH_OUTPUT" | tee -a ${quote(logPath)}
+    MR_URL=$(printf '%s\n' "${D}PUSH_OUTPUT" | grep -Eo 'https?://[^ ]+merge_requests[^ ]*' | tail -1 || true)
 
-    if command -v glab >/dev/null 2>&1; then
+    if [[ -z "${D}MR_URL" ]] && command -v glab >/dev/null 2>&1; then
       MR_OUTPUT=$(glab mr create --source-branch "${D}BRANCH" --target-branch "${D}MR_TARGET" --title "${D}MR_TITLE" --description "${D}TASK" --yes 2>&1 || true)
       echo "${D}MR_OUTPUT" | tee -a ${quote(logPath)}
       MR_URL=$(printf '%s\n' "${D}MR_OUTPUT" | grep -Eo 'https?://[^ ]+' | tail -1 || true)
-      if [[ -z "${D}MR_URL" ]]; then
-        STATUS="mr_failed"
-      fi
-    else
+    fi
+
+    if [[ -z "${D}MR_URL" ]]; then
       STATUS="mr_failed"
-      echo "glab not found, skip MR create" | tee -a ${quote(logPath)}
     fi
   fi
 fi
