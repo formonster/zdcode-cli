@@ -30,6 +30,7 @@ type UpOptions = {
   mrTarget?: string
   mrTitle?: string
   notify?: boolean
+  notifyFeishu?: string
 }
 
 const requireGitRepo = (cwd: string) => {
@@ -61,7 +62,7 @@ const createRunnerScript = (
   codexCommand: string,
   task: string,
   branch: string,
-  options: { mrEnabled: boolean; mrTarget: string; mrTitle: string; notify: boolean }
+  options: { mrEnabled: boolean; mrTarget: string; mrTitle: string; notify: boolean; notifyFeishu?: string }
 ) => {
   ensureGlobalDirs()
   const scriptPath = path.join(ZDCODE_RUNNER_DIR, `${sessionName}.sh`)
@@ -77,11 +78,17 @@ MR_ENABLED=${options.mrEnabled ? '1' : '0'}
 MR_TARGET=${quote(options.mrTarget)}
 MR_TITLE=${quote(options.mrTitle)}
 NOTIFY=${options.notify ? '1' : '0'}
+NOTIFY_FEISHU=${quote(options.notifyFeishu || "")}
 
 log_notify() {
   local text="${D}1"
-  if [[ "${D}NOTIFY" == "1" ]] && command -v openclaw >/dev/null 2>&1; then
-    openclaw system event --text "${D}text" --mode now >/dev/null 2>&1 || true
+  if command -v openclaw >/dev/null 2>&1; then
+    if [[ "${D}NOTIFY" == "1" ]]; then
+      openclaw system event --text "${D}text" --mode now >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${D}NOTIFY_FEISHU" ]]; then
+      openclaw message send --channel feishu --target "${D}NOTIFY_FEISHU" --message "${D}text" >/dev/null 2>&1 || true
+    fi
   fi
 }
 
@@ -161,6 +168,7 @@ const startTaskSession = (config: DevConfig, projectRoot: string, opts: UpOption
     mrTarget,
     mrTitle,
     notify: Boolean(opts.notify),
+    notifyFeishu: opts.notifyFeishu,
   })
 
   run(`tmux new-session -d -s ${quote(sessionName)} -c ${quote(worktreePath)} ${quote(`bash ${runner}`)}`)
@@ -186,6 +194,9 @@ const startTaskSession = (config: DevConfig, projectRoot: string, opts: UpOption
   }
   if (opts.notify) {
     console.log('- notify:  enabled (openclaw system event)')
+  }
+  if (opts.notifyFeishu) {
+    console.log(`- notify-feishu: enabled (${opts.notifyFeishu})`)
   }
   console.log(`\n可用命令: zdcode dev attach ${sessionName}`)
 }
@@ -224,6 +235,7 @@ const registerUp = (dev: Command) => {
     .option('--mr-target <branch>', 'MR 目标分支，默认使用配置里的 baseBranch')
     .option('--mr-title <title>', 'MR 标题，不传则自动生成')
     .option('--notify', '任务完成后发送 openclaw system event 通知')
+    .option('--notify-feishu <openId>', '任务完成后直发飞书通知到指定 open_id')
     .action((options: UpOptions) => {
       const cwd = process.cwd()
       requireGitRepo(cwd)
