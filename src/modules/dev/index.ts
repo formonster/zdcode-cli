@@ -108,6 +108,10 @@ if [[ "${D}MR_ENABLED" == "1" ]]; then
       MR_URL=$(printf '%s\n' "${D}MR_OUTPUT" | grep -Eo 'https?://[^ ]+' | tail -1 || true)
     fi
 
+    if [[ -n "${D}MR_URL" ]]; then
+      MR_URL=${D}{MR_URL//gitlab.tita.cloud/gitlab.tita.work}
+    fi
+
     if [[ -z "${D}MR_URL" ]]; then
       STATUS="mr_failed"
     fi
