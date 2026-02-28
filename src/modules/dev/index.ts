@@ -17,6 +17,7 @@ import {
   run,
   sessionRunning,
   slugify,
+  shortHash,
   upsertSession,
   writeProjectConfig,
   ZDCODE_LOG_DIR,
@@ -62,15 +63,17 @@ cd ${quote(worktreePath)}
 
 const startTaskSession = (config: DevConfig, projectRoot: string, task: string) => {
   const stamp = nowStamp()
-  const taskSlug = slugify(task)
-  const projectSlug = slugify(config.projectName)
-  const sessionName = `zd-${projectSlug}-${taskSlug}-${stamp.slice(-6)}`.slice(0, 80)
+  const shortStamp = stamp.slice(-6)
+  const taskSlug = slugify(task, 16)
+  const projectSlug = slugify(config.projectName, 12)
+  const taskId = shortHash(`${task}-${stamp}`, 6)
+  const sessionName = `zd-${projectSlug}-${taskSlug}-${taskId}-${shortStamp}`.slice(0, 64)
 
   const worktreeRoot = config.worktreeRoot
   ensureDir(worktreeRoot)
 
-  const branch = `task/${taskSlug}-${stamp}`
-  const worktreePath = path.join(worktreeRoot, `${taskSlug}-${stamp}`)
+  const branch = `task/${taskSlug}-${taskId}`
+  const worktreePath = path.join(worktreeRoot, `${taskSlug}-${taskId}`)
   const logPath = path.join(ZDCODE_LOG_DIR, `${sessionName}.log`)
 
   run(`git worktree add -b ${quote(branch)} ${quote(worktreePath)} ${quote(config.baseBranch)}`, projectRoot)

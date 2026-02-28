@@ -38,13 +38,22 @@ export const ensureGlobalDirs = () => {
   ensureDir(ZDCODE_RUNNER_DIR)
 }
 
-export const slugify = (input: string) =>
+export const slugify = (input: string, maxLen: number = 24) =>
   input
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 40) || 'task'
+    .slice(0, maxLen) || 'task'
+
+export const shortHash = (input: string, len: number = 6) => {
+  let hash = 2166136261
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36).slice(0, len)
+}
 
 export const nowStamp = () => {
   const now = new Date()
