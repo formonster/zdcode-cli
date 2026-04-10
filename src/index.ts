@@ -4,11 +4,13 @@ import 'zx/globals'
 import packageJson from '../package.json'
 import temp from './modules/hello'
 import devModule from './modules/dev'
+import feishuModule from './modules/feishu'
 
 const program = new Command()
 
 temp(program)
 devModule(program)
+feishuModule(program)
 
 program.version(
   packageJson.version,
