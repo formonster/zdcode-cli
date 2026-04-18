@@ -5,12 +5,14 @@ import packageJson from '../package.json'
 import temp from './modules/hello'
 import devModule from './modules/dev'
 import feishuModule from './modules/feishu'
+import platformModule from './modules/platform'
 
 const program = new Command()
 
 temp(program)
 devModule(program)
 feishuModule(program)
+platformModule(program)
 
 program.version(
   packageJson.version,

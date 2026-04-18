@@ -10,7 +10,8 @@
     "dev": "tsup --watch --sourcemap",
     "prepublish": "pnpm run build",
     "build": "tsup",
-    "test:feishu": "pnpm run build && node ./scripts/test-feishu.mjs"
+    "test:feishu": "pnpm run build && node ./scripts/test-feishu.mjs",
+    "runtime:serve": "node ./dist/index.js runtime serve"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +20,9 @@
     "zdcode": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "dashboard",
+    "python_runtime"
   ],
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",

@@ -1,0 +1,137 @@
+import type { AgentProfile, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
+
+export const mockHealth: RuntimeHealth = {
+  ok: true,
+  status: 'degraded',
+  runtime: {
+    agentsAvailable: true,
+    memoryEnabled: false,
+    defaultModel: 'volcengine/ark-code-latest',
+    openAIApiKey: true,
+  },
+}
+
+export const mockSkills: SkillRecord[] = [
+  {
+    id: 'frontend-design',
+    name: 'frontend-design',
+    description: 'Create distinctive, production-grade frontend interfaces.',
+    path: '/Users/ding/.agents/skills/frontend-design/SKILL.md',
+  },
+  {
+    id: 'vercel:agent-browser',
+    name: 'vercel:agent-browser',
+    description: 'Browser automation CLI for AI agents.',
+    path: '/Users/ding/.codex/plugins/cache/openai-curated/vercel/skills/agent-browser/SKILL.md',
+  },
+  {
+    id: 'openai-docs',
+    name: 'openai-docs',
+    description: 'Official OpenAI docs guidance.',
+    path: '/Users/ding/.codex/skills/.system/openai-docs/SKILL.md',
+  },
+]
+
+export const mockModels: ModelRecord[] = [
+  {
+    model_key: 'volcengine/ark-code-latest',
+    provider: 'volcengine',
+    display_name: 'ark-code-latest',
+    is_default: true,
+  },
+  {
+    model_key: 'openai/openai-codex',
+    provider: 'openai',
+    display_name: 'openai-codex',
+  },
+]
+
+export const mockAgents: AgentProfile[] = [
+  {
+    id: 'agent-pm',
+    name: 'PMAgent',
+    description: 'Owns task breakdown, prioritization, and synthesis.',
+    avatar_url: '',
+    persona_prompt: 'Be concise, skeptical, and operationally sharp.',
+    skills_prompt: 'Use browser and shell tools when needed.',
+    selected_skills: ['frontend-design', 'openai-docs'],
+    default_model: 'volcengine/ark-code-latest',
+    workspace_binding: '/Users/ding/zdcode/zdcode-cli',
+    enabled: true,
+  },
+  {
+    id: 'agent-runtime',
+    name: 'RuntimeAgent',
+    description: 'Inspects traces, tools, prompt payloads, and approvals.',
+    avatar_url: '',
+    persona_prompt: 'Act like a runtime debugger with a terse style.',
+    skills_prompt: 'Prefer direct inspection of timeline and tool output.',
+    selected_skills: ['vercel:agent-browser'],
+    default_model: 'openai/openai-codex',
+    workspace_binding: '/Users/ding/zdcode/zdcode-cli',
+    enabled: true,
+  },
+]
+
+export const mockTasks: TaskSession[] = [
+  {
+    id: 'task-1',
+    title: 'Desktop inspection',
+    prompt: 'Show the first five files on my desktop.',
+    status: 'completed',
+    entry_agent_id: 'agent-pm',
+    entry_agent_name: 'PMAgent',
+    active_agent_name: 'RuntimeAgent',
+    enabled_agent_ids: ['agent-pm', 'agent-runtime'],
+    participating_agents: ['PMAgent', 'RuntimeAgent'],
+    max_turns: 30,
+    context_summary: {
+      estimated_total_tokens: 1820,
+      system_chars: 3200,
+      user_chars: 148,
+      memory_chars: 0,
+    },
+    timeline: [
+      {
+        event_type: 'prompt_snapshot',
+        title: 'Prompt sent to PMAgent',
+        body: 'System instructions, memory policy, and user request.',
+      },
+      {
+        event_type: 'tool_call',
+        title: 'RuntimeAgent local command',
+        body: 'ls -lah ~/Desktop | head -5',
+      },
+      {
+        event_type: 'tool_result',
+        title: 'RuntimeAgent local command result',
+        body: '$RECYCLE.BIN\nOpenClaw橙皮书-从入门到精通.pdf\nOld_Homebrew',
+      },
+    ],
+  },
+  {
+    id: 'task-2',
+    title: 'Prompt audit',
+    prompt: 'Open the latest run and estimate the prompt budget before shipping.',
+    status: 'running',
+    entry_agent_id: 'agent-runtime',
+    entry_agent_name: 'RuntimeAgent',
+    active_agent_name: 'RuntimeAgent',
+    enabled_agent_ids: ['agent-runtime'],
+    participating_agents: ['RuntimeAgent'],
+    max_turns: 24,
+    context_summary: {
+      estimated_total_tokens: 960,
+      system_chars: 1840,
+      user_chars: 92,
+      memory_chars: 0,
+    },
+    timeline: [
+      {
+        event_type: 'run_started',
+        title: 'Orchestrator started',
+        body: 'RuntimeAgent is collecting trace detail.',
+      },
+    ],
+  },
+]
