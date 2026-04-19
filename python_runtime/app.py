@@ -55,6 +55,7 @@ def estimate_tokens(value: str) -> int:
 DB_PATH = Path(os.environ.get("ZDCODE_PLATFORM_DB", Path.home() / ".zdcode" / "platform" / "zdcode-platform.db")).expanduser().resolve()
 DASHBOARD_DIR = Path(os.environ.get("ZDCODE_DASHBOARD_DIR", Path(__file__).resolve().parents[1] / "dashboard")).resolve()
 OPENCLAW_CONFIG_PATH = Path(os.environ.get("ZDCODE_OPENCLAW_CONFIG", Path.home() / ".openclaw" / "openclaw.json")).expanduser().resolve()
+CHANNELS_CONNECTIONS_PATH = Path(os.environ.get("ZDCODE_CHANNELS_CONNECTIONS", Path.home() / ".zdcode" / "channels" / "connections.json")).expanduser().resolve()
 DEFAULT_MODEL_KEY = "volcengine/ark-code-latest"
 MEMORY_ENABLED = False
 DEFAULT_TASK_MAX_TURNS = 30
@@ -90,6 +91,7 @@ class Database:
                     workspace_binding TEXT NOT NULL,
                     tool_profile TEXT NOT NULL,
                     memory_policy TEXT NOT NULL,
+                    channel_config TEXT NOT NULL DEFAULT '{}',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -100,6 +102,10 @@ class Database:
                     title TEXT NOT NULL,
                     prompt TEXT NOT NULL,
                     max_turns INTEGER NOT NULL DEFAULT 30,
+                    source_kind TEXT NOT NULL DEFAULT 'manual',
+                    source_provider TEXT NOT NULL DEFAULT '',
+                    source_connection_id TEXT NOT NULL DEFAULT '',
+                    source_conversation_id TEXT NOT NULL DEFAULT '',
                     entry_agent_id TEXT NOT NULL,
                     entry_agent_name TEXT,
                     enabled_agent_ids TEXT NOT NULL,
@@ -174,6 +180,74 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS channel_conversations (
+                    id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    connection_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    current_task_id TEXT,
+                    current_agent_id TEXT,
+                    enabled_agent_ids TEXT NOT NULL DEFAULT '[]',
+                    max_turns INTEGER NOT NULL DEFAULT 30,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_conversations_unique
+                    ON channel_conversations(provider, connection_id, conversation_id);
+
+                CREATE TABLE IF NOT EXISTS channel_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider TEXT NOT NULL,
+                    connection_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL DEFAULT '',
+                    task_session_id TEXT,
+                    direction TEXT NOT NULL,
+                    text TEXT NOT NULL DEFAULT '',
+                    raw_payload TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_messages_unique
+                    ON channel_messages(provider, connection_id, message_id, direction);
+
+                CREATE TABLE IF NOT EXISTS agent_channel_bindings (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    connection_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    enabled_agent_ids TEXT NOT NULL DEFAULT '[]',
+                    max_turns INTEGER NOT NULL DEFAULT 30,
+                    push_enabled INTEGER NOT NULL DEFAULT 1,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_channel_bindings_unique
+                    ON agent_channel_bindings(agent_id, provider, connection_id, conversation_id);
+
+                CREATE TABLE IF NOT EXISTS channel_outbox (
+                    id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    connection_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    task_session_id TEXT,
+                    agent_id TEXT NOT NULL DEFAULT '',
+                    stage TEXT NOT NULL DEFAULT 'final',
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    delivered_at TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS model_registry (
                     model_key TEXT PRIMARY KEY,
                     provider TEXT NOT NULL,
@@ -204,11 +278,21 @@ class Database:
             columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(task_sessions)").fetchall()}
             if "max_turns" not in columns:
                 self._conn.execute("ALTER TABLE task_sessions ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 30")
+            if "source_kind" not in columns:
+                self._conn.execute("ALTER TABLE task_sessions ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'")
+            if "source_provider" not in columns:
+                self._conn.execute("ALTER TABLE task_sessions ADD COLUMN source_provider TEXT NOT NULL DEFAULT ''")
+            if "source_connection_id" not in columns:
+                self._conn.execute("ALTER TABLE task_sessions ADD COLUMN source_connection_id TEXT NOT NULL DEFAULT ''")
+            if "source_conversation_id" not in columns:
+                self._conn.execute("ALTER TABLE task_sessions ADD COLUMN source_conversation_id TEXT NOT NULL DEFAULT ''")
             agent_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(agent_profiles)").fetchall()}
             if "avatar_url" not in agent_columns:
                 self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''")
             if "selected_skills" not in agent_columns:
                 self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN selected_skills TEXT NOT NULL DEFAULT '[]'")
+            if "channel_config" not in agent_columns:
+                self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN channel_config TEXT NOT NULL DEFAULT '{}'")
             self._conn.commit()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
@@ -246,6 +330,7 @@ class AgentCreatePayload(BaseModel):
     workspace_binding: str
     tool_profile: dict[str, Any] = Field(default_factory=lambda: {"shell": True, "filesystem": True, "browser": False})
     memory_policy: dict[str, Any] = Field(default_factory=lambda: {"provider": "mem0", "scope": ""})
+    channel_config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -260,6 +345,7 @@ class AgentPatchPayload(BaseModel):
     workspace_binding: str | None = None
     tool_profile: dict[str, Any] | None = None
     memory_policy: dict[str, Any] | None = None
+    channel_config: dict[str, Any] | None = None
     enabled: bool | None = None
 
 
@@ -269,14 +355,74 @@ class TaskCreatePayload(BaseModel):
     entry_agent_id: str
     enabled_agent_ids: list[str]
     max_turns: int = DEFAULT_TASK_MAX_TURNS
+    source_kind: str = "manual"
+    source_provider: str = ""
+    source_connection_id: str = ""
+    source_conversation_id: str = ""
 
 
 class TaskMessagePayload(BaseModel):
     prompt: str
 
 
+class ChannelInboundPayload(BaseModel):
+    provider: str
+    connection_id: str
+    conversation_id: str
+    message_id: str
+    sender_id: str
+    text: str
+    received_at: str = ""
+    raw: dict[str, Any] | list[Any] | str | None = None
+    entry_agent_id: str | None = None
+    enabled_agent_ids: list[str] = Field(default_factory=list)
+    max_turns: int | None = None
+
+
+class ChannelBindingCreatePayload(BaseModel):
+    agent_id: str
+    provider: str
+    connection_id: str
+    conversation_id: str
+    enabled_agent_ids: list[str] = Field(default_factory=list)
+    max_turns: int = DEFAULT_TASK_MAX_TURNS
+    push_enabled: bool = True
+    enabled: bool = True
+
+
+class ChannelBindingPatchPayload(BaseModel):
+    enabled_agent_ids: list[str] | None = None
+    max_turns: int | None = None
+    push_enabled: bool | None = None
+    enabled: bool | None = None
+
+
 class ApprovalDecisionPayload(BaseModel):
     reason: str = ""
+
+
+class ChannelOutboxDecisionPayload(BaseModel):
+    error: str = ""
+
+
+class ChannelConnectionCreatePayload(BaseModel):
+    id: str
+    name: str
+    provider: str
+    app_id: str = ""
+    app_secret: str = ""
+    domain: str = "feishu"
+    webhook: str = ""
+    enabled: bool = True
+
+
+class ChannelConnectionPatchPayload(BaseModel):
+    name: str | None = None
+    app_id: str | None = None
+    app_secret: str | None = None
+    domain: str | None = None
+    webhook: str | None = None
+    enabled: bool | None = None
 
 
 class ModelDefaultPayload(BaseModel):
@@ -628,6 +774,7 @@ def normalize_agent(row: dict[str, Any] | None) -> dict[str, Any] | None:
     row["tool_profile"] = json_loads(row["tool_profile"], {})
     row["memory_policy"] = json_loads(row["memory_policy"], {})
     row["selected_skills"] = json_loads(row.get("selected_skills"), [])
+    row["channel_config"] = {**default_channel_config(), **json_loads(row.get("channel_config"), {})}
     row["available_models"] = [item["model_key"] for item in list_models()]
     return row
 
@@ -661,6 +808,86 @@ def normalize_memory_scope(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return row
 
 
+def normalize_channel_conversation(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    row["enabled_agent_ids"] = json_loads(row.get("enabled_agent_ids"), [])
+    row["max_turns"] = int(row.get("max_turns") or DEFAULT_TASK_MAX_TURNS)
+    return row
+
+
+def normalize_channel_binding(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    row["enabled_agent_ids"] = json_loads(row.get("enabled_agent_ids"), [])
+    row["max_turns"] = int(row.get("max_turns") or DEFAULT_TASK_MAX_TURNS)
+    row["push_enabled"] = bool(row.get("push_enabled"))
+    row["enabled"] = bool(row.get("enabled"))
+    return row
+
+
+def normalize_channel_outbox(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    row["attempts"] = int(row.get("attempts") or 0)
+    return row
+
+
+def channels_store_default() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "connections": {},
+    }
+
+
+def read_channel_connections_store() -> dict[str, Any]:
+    CHANNELS_CONNECTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not CHANNELS_CONNECTIONS_PATH.exists():
+        CHANNELS_CONNECTIONS_PATH.write_text(f"{json_dumps(channels_store_default())}\n", encoding="utf-8")
+    try:
+        parsed = json.loads(CHANNELS_CONNECTIONS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"Invalid channel connections store: {exc}") from exc
+    if not isinstance(parsed, dict) or parsed.get("version") != 1 or not isinstance(parsed.get("connections"), dict):
+        raise HTTPException(status_code=500, detail="Invalid channel connections store shape.")
+    return parsed
+
+
+def write_channel_connections_store(store: dict[str, Any]) -> None:
+    CHANNELS_CONNECTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CHANNELS_CONNECTIONS_PATH.write_text(f"{json_dumps(store)}\n", encoding="utf-8")
+
+
+def normalize_channel_connection(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not record:
+        return None
+    return {
+        "id": record.get("id") or "",
+        "name": record.get("name") or "",
+        "provider": record.get("provider") or "feishu",
+        "enabled": bool(record.get("enabled", True)),
+        "app_id": record.get("appId") or "",
+        "app_secret": record.get("appSecret") or "",
+        "domain": record.get("domain") or "feishu",
+        "webhook": record.get("webhook") or "",
+        "created_at": record.get("createdAt") or "",
+        "updated_at": record.get("updatedAt") or "",
+    }
+
+
+def default_channel_config() -> dict[str, Any]:
+    return {
+        "provider": "feishu",
+        "app_id": "",
+        "app_secret": "",
+        "domain": "feishu",
+        "webhook": "",
+        "chat_id": "",
+        "push_enabled": True,
+        "enabled": False,
+    }
+
+
 def list_agents() -> list[dict[str, Any]]:
     return [normalize_agent(item) for item in db.fetchall("SELECT * FROM agent_profiles ORDER BY created_at DESC")]
 
@@ -687,8 +914,8 @@ def create_agent(payload: AgentCreatePayload) -> dict[str, Any]:
         """
         INSERT INTO agent_profiles(
             id, name, description, avatar_url, persona_prompt, skills_prompt, selected_skills, default_model,
-            workspace_binding, tool_profile, memory_policy, enabled, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            workspace_binding, tool_profile, memory_policy, channel_config, enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             agent_id,
@@ -702,12 +929,15 @@ def create_agent(payload: AgentCreatePayload) -> dict[str, Any]:
             workspace,
             json_dumps(payload.tool_profile),
             json_dumps(memory_policy),
+            json_dumps({**default_channel_config(), **payload.channel_config}),
             1 if payload.enabled else 0,
             now,
             now,
         ),
     )
     memory_service.provider_for(memory_policy).rebuild(scope)
+    created = get_agent(agent_id)
+    sync_agent_channel_runtime(created)
     return get_agent(agent_id)
 
 
@@ -727,13 +957,14 @@ def patch_agent(agent_id: str, payload: AgentPatchPayload) -> dict[str, Any]:
         "workspace_binding": str(Path(payload.workspace_binding).expanduser().resolve()) if payload.workspace_binding is not None else current["workspace_binding"],
         "tool_profile": payload.tool_profile if payload.tool_profile is not None else current["tool_profile"],
         "memory_policy": {**current["memory_policy"], **(payload.memory_policy or {})},
+        "channel_config": {**default_channel_config(), **current.get("channel_config", {}), **(payload.channel_config or {})},
         "enabled": current["enabled"] if payload.enabled is None else payload.enabled,
     }
     db.execute(
         """
         UPDATE agent_profiles
         SET name = ?, description = ?, avatar_url = ?, persona_prompt = ?, skills_prompt = ?, selected_skills = ?, default_model = ?,
-            workspace_binding = ?, tool_profile = ?, memory_policy = ?, enabled = ?, updated_at = ?
+            workspace_binding = ?, tool_profile = ?, memory_policy = ?, channel_config = ?, enabled = ?, updated_at = ?
         WHERE id = ?
         """,
         (
@@ -747,11 +978,14 @@ def patch_agent(agent_id: str, payload: AgentPatchPayload) -> dict[str, Any]:
             updated["workspace_binding"],
             json_dumps(updated["tool_profile"]),
             json_dumps(updated["memory_policy"]),
+            json_dumps(updated["channel_config"]),
             1 if updated["enabled"] else 0,
             utcnow(),
             agent_id,
         ),
     )
+    patched = get_agent(agent_id)
+    sync_agent_channel_runtime(patched)
     return get_agent(agent_id)
 
 
@@ -828,16 +1062,21 @@ def create_task(payload: TaskCreatePayload) -> dict[str, Any]:
     db.execute(
         """
         INSERT INTO task_sessions(
-            id, title, prompt, max_turns, entry_agent_id, entry_agent_name, enabled_agent_ids,
+            id, title, prompt, max_turns, source_kind, source_provider, source_connection_id, source_conversation_id,
+            entry_agent_id, entry_agent_name, enabled_agent_ids,
             participating_agents, active_agent_id, active_agent_name, status,
             last_run_id, last_error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
             payload.title,
             payload.prompt,
             max(1, int(payload.max_turns or DEFAULT_TASK_MAX_TURNS)),
+            payload.source_kind or "manual",
+            payload.source_provider or "",
+            payload.source_connection_id or "",
+            payload.source_conversation_id or "",
             payload.entry_agent_id,
             entry_agent["name"],
             json_dumps(enabled_agent_ids),
@@ -853,6 +1092,473 @@ def create_task(payload: TaskCreatePayload) -> dict[str, Any]:
     )
     log_timeline(task_id, "task_created", f"Task created: {payload.title}", body=payload.prompt)
     return get_task(task_id)
+
+
+def default_entry_agent() -> dict[str, Any]:
+    enabled = [item for item in list_agents() if item["enabled"]]
+    if not enabled:
+        raise HTTPException(status_code=400, detail="No enabled agents are configured.")
+    return enabled[0]
+
+
+def get_channel_conversation(provider: str, connection_id: str, conversation_id: str) -> dict[str, Any] | None:
+    return normalize_channel_conversation(
+        db.fetchone(
+            "SELECT * FROM channel_conversations WHERE provider = ? AND connection_id = ? AND conversation_id = ?",
+            (provider, connection_id, conversation_id),
+        )
+    )
+
+
+def upsert_channel_conversation(
+    *,
+    provider: str,
+    connection_id: str,
+    conversation_id: str,
+    current_task_id: str | None,
+    current_agent_id: str | None,
+    enabled_agent_ids: list[str],
+    max_turns: int,
+) -> dict[str, Any]:
+    now = utcnow()
+    existing = get_channel_conversation(provider, connection_id, conversation_id)
+    if existing:
+        db.execute(
+            """
+            UPDATE channel_conversations
+            SET current_task_id = ?, current_agent_id = ?, enabled_agent_ids = ?, max_turns = ?, updated_at = ?
+            WHERE provider = ? AND connection_id = ? AND conversation_id = ?
+            """,
+            (
+                current_task_id,
+                current_agent_id,
+                json_dumps(enabled_agent_ids),
+                max(1, int(max_turns or DEFAULT_TASK_MAX_TURNS)),
+                now,
+                provider,
+                connection_id,
+                conversation_id,
+            ),
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO channel_conversations(
+                id, provider, connection_id, conversation_id, current_task_id, current_agent_id,
+                enabled_agent_ids, max_turns, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                provider,
+                connection_id,
+                conversation_id,
+                current_task_id,
+                current_agent_id,
+                json_dumps(enabled_agent_ids),
+                max(1, int(max_turns or DEFAULT_TASK_MAX_TURNS)),
+                now,
+                now,
+            ),
+        )
+    return get_channel_conversation(provider, connection_id, conversation_id) or {}
+
+
+def record_channel_message(
+    *,
+    provider: str,
+    connection_id: str,
+    conversation_id: str,
+    message_id: str,
+    sender_id: str,
+    task_session_id: str | None,
+    direction: str,
+    text: str,
+    raw_payload: Any,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO channel_messages(
+            provider, connection_id, conversation_id, message_id, sender_id, task_session_id, direction, text, raw_payload, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            provider,
+            connection_id,
+            conversation_id,
+            message_id,
+            sender_id,
+            task_session_id,
+            direction,
+            text,
+            json_dumps(raw_payload if raw_payload is not None else {}),
+            utcnow(),
+        ),
+    )
+
+
+def list_channel_bindings() -> list[dict[str, Any]]:
+    return [
+        normalize_channel_binding(item)
+        for item in db.fetchall("SELECT * FROM agent_channel_bindings ORDER BY created_at DESC")
+    ]
+
+
+def list_channel_connections() -> list[dict[str, Any]]:
+    store = read_channel_connections_store()
+    connections = [normalize_channel_connection({"id": key, **value}) for key, value in store["connections"].items()]
+    return sorted([item for item in connections if item], key=lambda item: item["name"].lower())
+
+
+def get_channel_connection(connection_id: str) -> dict[str, Any]:
+    store = read_channel_connections_store()
+    record = store["connections"].get(connection_id)
+    connection = normalize_channel_connection({"id": connection_id, **record} if record else None)
+    if not connection:
+        raise HTTPException(status_code=404, detail=f"Channel connection not found: {connection_id}")
+    return connection
+
+
+def validate_channel_connection_payload(provider: str, app_id: str, app_secret: str, webhook: str) -> None:
+    if provider != "feishu":
+        raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
+    if not app_id.strip() and not webhook.strip():
+        raise HTTPException(status_code=400, detail="Channel connection requires app_id or webhook.")
+    if app_id.strip() and not app_secret.strip():
+        raise HTTPException(status_code=400, detail="Channel connection with app_id also requires app_secret.")
+
+
+def connection_id_for_agent(agent_id: str, provider: str = "feishu") -> str:
+    return f"agent-{provider}-{agent_id[:8]}"
+
+
+def create_channel_connection(payload: ChannelConnectionCreatePayload) -> dict[str, Any]:
+    store = read_channel_connections_store()
+    if payload.id in store["connections"]:
+        raise HTTPException(status_code=409, detail=f"Channel connection already exists: {payload.id}")
+    validate_channel_connection_payload(payload.provider, payload.app_id, payload.app_secret, payload.webhook)
+    now = utcnow()
+    store["connections"][payload.id] = {
+        "name": payload.name,
+        "provider": payload.provider,
+        "enabled": payload.enabled,
+        "appId": payload.app_id,
+        "appSecret": payload.app_secret,
+        "domain": payload.domain or "feishu",
+        "webhook": payload.webhook,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    write_channel_connections_store(store)
+    return get_channel_connection(payload.id)
+
+
+def patch_channel_connection(connection_id: str, payload: ChannelConnectionPatchPayload) -> dict[str, Any]:
+    store = read_channel_connections_store()
+    current = store["connections"].get(connection_id)
+    if not current:
+        raise HTTPException(status_code=404, detail=f"Channel connection not found: {connection_id}")
+    updated = {
+        **current,
+        "name": payload.name if payload.name is not None else current.get("name", ""),
+        "appId": payload.app_id if payload.app_id is not None else current.get("appId", ""),
+        "appSecret": payload.app_secret if payload.app_secret is not None else current.get("appSecret", ""),
+        "domain": payload.domain if payload.domain is not None else current.get("domain", "feishu"),
+        "webhook": payload.webhook if payload.webhook is not None else current.get("webhook", ""),
+        "enabled": current.get("enabled", True) if payload.enabled is None else payload.enabled,
+        "updatedAt": utcnow(),
+    }
+    validate_channel_connection_payload(updated.get("provider", "feishu"), updated.get("appId", ""), updated.get("appSecret", ""), updated.get("webhook", ""))
+    store["connections"][connection_id] = updated
+    write_channel_connections_store(store)
+    return get_channel_connection(connection_id)
+
+
+def upsert_channel_connection_record(
+    *,
+    connection_id: str,
+    name: str,
+    provider: str,
+    app_id: str,
+    app_secret: str,
+    domain: str,
+    webhook: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    store = read_channel_connections_store()
+    current = store["connections"].get(connection_id, {})
+    store["connections"][connection_id] = {
+        "name": name,
+        "provider": provider,
+        "enabled": enabled,
+        "appId": app_id,
+        "appSecret": app_secret,
+        "domain": domain,
+        "webhook": webhook,
+        "createdAt": current.get("createdAt") or utcnow(),
+        "updatedAt": utcnow(),
+    }
+    write_channel_connections_store(store)
+    return get_channel_connection(connection_id)
+
+
+def create_channel_binding(payload: ChannelBindingCreatePayload) -> dict[str, Any]:
+    agent = get_agent(payload.agent_id)
+    binding_id = str(uuid.uuid4())
+    enabled_agent_ids = list(dict.fromkeys(payload.enabled_agent_ids or [agent["id"]]))
+    if agent["id"] not in enabled_agent_ids:
+        enabled_agent_ids.insert(0, agent["id"])
+    now = utcnow()
+    db.execute(
+        """
+        INSERT INTO agent_channel_bindings(
+            id, agent_id, agent_name, provider, connection_id, conversation_id,
+            enabled_agent_ids, max_turns, push_enabled, enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            binding_id,
+            agent["id"],
+            agent["name"],
+            payload.provider,
+            payload.connection_id,
+            payload.conversation_id,
+            json_dumps(enabled_agent_ids),
+            max(1, int(payload.max_turns or DEFAULT_TASK_MAX_TURNS)),
+            1 if payload.push_enabled else 0,
+            1 if payload.enabled else 0,
+            now,
+            now,
+        ),
+    )
+    return normalize_channel_binding(db.fetchone("SELECT * FROM agent_channel_bindings WHERE id = ?", (binding_id,))) or {}
+
+
+def patch_channel_binding(binding_id: str, payload: ChannelBindingPatchPayload) -> dict[str, Any]:
+    current = normalize_channel_binding(db.fetchone("SELECT * FROM agent_channel_bindings WHERE id = ?", (binding_id,)))
+    if not current:
+        raise HTTPException(status_code=404, detail=f"Channel binding not found: {binding_id}")
+    updated = {
+        "enabled_agent_ids": payload.enabled_agent_ids if payload.enabled_agent_ids is not None else current["enabled_agent_ids"],
+        "max_turns": max(1, int(payload.max_turns or current["max_turns"])),
+        "push_enabled": current["push_enabled"] if payload.push_enabled is None else payload.push_enabled,
+        "enabled": current["enabled"] if payload.enabled is None else payload.enabled,
+    }
+    db.execute(
+        """
+        UPDATE agent_channel_bindings
+        SET enabled_agent_ids = ?, max_turns = ?, push_enabled = ?, enabled = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            json_dumps(updated["enabled_agent_ids"]),
+            updated["max_turns"],
+            1 if updated["push_enabled"] else 0,
+            1 if updated["enabled"] else 0,
+            utcnow(),
+            binding_id,
+        ),
+    )
+    return normalize_channel_binding(db.fetchone("SELECT * FROM agent_channel_bindings WHERE id = ?", (binding_id,))) or {}
+
+
+def resolve_channel_binding(provider: str, connection_id: str, conversation_id: str) -> dict[str, Any] | None:
+    return normalize_channel_binding(
+        db.fetchone(
+            """
+            SELECT * FROM agent_channel_bindings
+            WHERE provider = ? AND connection_id = ? AND conversation_id = ? AND enabled = 1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (provider, connection_id, conversation_id),
+        )
+    )
+
+
+def queue_channel_outbox(
+    *,
+    provider: str,
+    connection_id: str,
+    conversation_id: str,
+    task_session_id: str | None,
+    agent_id: str,
+    stage: str,
+    text: str,
+) -> dict[str, Any]:
+    outbox_id = str(uuid.uuid4())
+    now = utcnow()
+    db.execute(
+        """
+        INSERT INTO channel_outbox(
+            id, provider, connection_id, conversation_id, task_session_id, agent_id, stage, text, status, attempts, last_error, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            outbox_id,
+            provider,
+            connection_id,
+            conversation_id,
+            task_session_id,
+            agent_id,
+            stage,
+            text,
+            "pending",
+            0,
+            "",
+            now,
+            now,
+        ),
+    )
+    return normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,))) or {}
+
+
+def list_pending_channel_outbox(connection_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    if connection_id:
+        rows = db.fetchall(
+            "SELECT * FROM channel_outbox WHERE status = 'pending' AND connection_id = ? ORDER BY created_at ASC LIMIT ?",
+            (connection_id, max(1, min(limit, 200))),
+        )
+    else:
+        rows = db.fetchall(
+            "SELECT * FROM channel_outbox WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
+            (max(1, min(limit, 200)),),
+        )
+    return [normalize_channel_outbox(item) for item in rows]
+
+
+def mark_channel_outbox_delivered(outbox_id: str) -> dict[str, Any]:
+    current = normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,)))
+    if not current:
+        raise HTTPException(status_code=404, detail=f"Channel outbox item not found: {outbox_id}")
+    db.execute(
+        """
+        UPDATE channel_outbox
+        SET status = 'delivered', attempts = ?, last_error = '', delivered_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (current["attempts"] + 1, utcnow(), utcnow(), outbox_id),
+    )
+    return normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,))) or {}
+
+
+def mark_channel_outbox_failed(outbox_id: str, error: str) -> dict[str, Any]:
+    current = normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,)))
+    if not current:
+        raise HTTPException(status_code=404, detail=f"Channel outbox item not found: {outbox_id}")
+    next_status = "failed" if current["attempts"] + 1 >= 5 else "pending"
+    db.execute(
+        """
+        UPDATE channel_outbox
+        SET status = ?, attempts = ?, last_error = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (next_status, current["attempts"] + 1, error[:1000], utcnow(), outbox_id),
+    )
+    return normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,))) or {}
+
+
+def queue_task_channel_push(task: dict[str, Any], *, stage: str, text: str) -> None:
+    if task.get("source_kind") != "channel":
+        return
+    if not task.get("source_connection_id") or not task.get("source_conversation_id"):
+        return
+    binding = resolve_channel_binding(task.get("source_provider") or "", task.get("source_connection_id") or "", task.get("source_conversation_id") or "")
+    if binding and not binding.get("push_enabled"):
+        return
+    queue_channel_outbox(
+        provider=task.get("source_provider") or "",
+        connection_id=task.get("source_connection_id") or "",
+        conversation_id=task.get("source_conversation_id") or "",
+        task_session_id=task["id"],
+        agent_id=task.get("entry_agent_id") or "",
+        stage=stage,
+        text=text,
+    )
+
+
+def sync_agent_channel_runtime(agent: dict[str, Any]) -> None:
+    channel = {**default_channel_config(), **(agent.get("channel_config") or {})}
+    provider = (channel.get("provider") or "feishu").strip() or "feishu"
+    connection_id = connection_id_for_agent(agent["id"], provider)
+    app_id = str(channel.get("app_id") or "").strip()
+    app_secret = str(channel.get("app_secret") or "").strip()
+    domain = str(channel.get("domain") or "feishu").strip() or "feishu"
+    webhook = str(channel.get("webhook") or "").strip()
+    chat_id = str(channel.get("chat_id") or "").strip()
+    push_enabled = bool(channel.get("push_enabled", True))
+    channel_enabled = bool(channel.get("enabled")) and bool(app_id or webhook)
+
+    upsert_channel_connection_record(
+        connection_id=connection_id,
+        name=f"{agent['name']} {provider}",
+        provider=provider,
+        app_id=app_id,
+        app_secret=app_secret,
+        domain=domain,
+        webhook=webhook,
+        enabled=channel_enabled,
+    )
+
+    existing_bindings = db.fetchall(
+        "SELECT * FROM agent_channel_bindings WHERE agent_id = ? AND provider = ?",
+        (agent["id"], provider),
+    )
+    existing_by_conversation = {
+        item["conversation_id"]: normalize_channel_binding(item)
+        for item in existing_bindings
+    }
+
+    if channel_enabled and chat_id:
+        current_binding = existing_by_conversation.get(chat_id)
+        if current_binding:
+            db.execute(
+                """
+                UPDATE agent_channel_bindings
+                SET agent_name = ?, connection_id = ?, enabled_agent_ids = ?, max_turns = ?, push_enabled = ?, enabled = 1, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    agent["name"],
+                    connection_id,
+                    json_dumps(current_binding.get("enabled_agent_ids") or [agent["id"]]),
+                    current_binding.get("max_turns") or DEFAULT_TASK_MAX_TURNS,
+                    1 if push_enabled else 0,
+                    utcnow(),
+                    current_binding["id"],
+                ),
+            )
+        else:
+            create_channel_binding(
+                ChannelBindingCreatePayload(
+                    agent_id=agent["id"],
+                    provider=provider,
+                    connection_id=connection_id,
+                    conversation_id=chat_id,
+                    enabled_agent_ids=[agent["id"]],
+                    max_turns=DEFAULT_TASK_MAX_TURNS,
+                    push_enabled=push_enabled,
+                    enabled=True,
+                )
+            )
+
+    for item in existing_bindings:
+        should_enable = bool(channel_enabled and chat_id and item["conversation_id"] == chat_id)
+        db.execute(
+            """
+            UPDATE agent_channel_bindings
+            SET agent_name = ?, connection_id = ?, push_enabled = ?, enabled = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                agent["name"],
+                connection_id,
+                1 if push_enabled else 0,
+                1 if should_enable else 0,
+                utcnow(),
+                item["id"],
+            ),
+        )
 
 
 def get_task(task_id: str) -> dict[str, Any]:
@@ -1526,6 +2232,7 @@ async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, 
                     ),
                 )
             log_timeline(task_id, "approval_requested", "Run paused for approval", run_id=run_id, body=f"{len(result.interruptions)} approval(s) pending")
+            queue_task_channel_push(task, stage="approval", text=f"任务需要审批后才能继续，共有 {len(result.interruptions)} 个待审批动作。")
             return
 
         final_output = str(result.final_output)
@@ -1545,6 +2252,7 @@ async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, 
         db.execute("DELETE FROM approvals WHERE run_id = ?", (run_id,))
         update_task_status(task_id, status="completed", last_run_id=run_id, last_error="")
         log_timeline(task_id, "task_completed", "Task completed", run_id=run_id, agent_id=entry_agent["id"], agent_name=entry_agent["name"], body=final_output[:400])
+        queue_task_channel_push(task, stage="final", text=final_output or "任务已完成。")
     except Exception as exc:
         message = str(exc)
         run_id = run_id or resume_run_id or task.get("last_run_id")
@@ -1554,6 +2262,7 @@ async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, 
             complete_run(run_id, "failed", message, {"error": message})
         update_task_status(task_id, status="failed", last_run_id=run_id, last_error=message)
         log_timeline(task_id, "task_failed", "Task failed", run_id=run_id, body=message)
+        queue_task_channel_push(task, stage="error", text=f"任务执行失败：{message}")
 
 
 app = FastAPI(title="ZDCode Runtime", version="0.1.0")
@@ -1595,6 +2304,26 @@ async def models_index() -> list[dict[str, Any]]:
 @app.get("/skills")
 async def skills_index() -> list[dict[str, Any]]:
     return list_skills()
+
+
+@app.get("/channel-connections")
+async def channel_connections_index() -> list[dict[str, Any]]:
+    return list_channel_connections()
+
+
+@app.post("/channel-connections")
+async def channel_connections_create(payload: ChannelConnectionCreatePayload) -> dict[str, Any]:
+    return create_channel_connection(payload)
+
+
+@app.get("/channel-connections/{connection_id}")
+async def channel_connections_show(connection_id: str) -> dict[str, Any]:
+    return get_channel_connection(connection_id)
+
+
+@app.patch("/channel-connections/{connection_id}")
+async def channel_connections_patch(connection_id: str, payload: ChannelConnectionPatchPayload) -> dict[str, Any]:
+    return patch_channel_connection(connection_id, payload)
 
 
 @app.get("/models/{model_key:path}")
@@ -1670,6 +2399,168 @@ async def tasks_message(task_id: str, payload: TaskMessagePayload) -> dict[str, 
     return get_task(task_id)
 
 
+def parse_channel_new_task(text: str) -> tuple[bool, str]:
+    stripped = text.strip()
+    if not stripped:
+        return False, ""
+    lowered = stripped.lower()
+    if lowered == "/new":
+        return True, ""
+    if lowered.startswith("/new "):
+        return True, stripped[5:].strip()
+    return False, stripped
+
+
+@app.post("/channels/messages")
+async def channels_message(payload: ChannelInboundPayload) -> dict[str, Any]:
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required.")
+
+    duplicate = db.fetchone(
+        "SELECT id, task_session_id FROM channel_messages WHERE provider = ? AND connection_id = ? AND message_id = ? AND direction = 'inbound'",
+        (payload.provider, payload.connection_id, payload.message_id),
+    )
+    if duplicate:
+        bound_task = get_task(duplicate["task_session_id"]) if duplicate.get("task_session_id") else None
+        return {
+            "ok": True,
+            "duplicate": True,
+            "action": "ignored",
+            "task_id": duplicate.get("task_session_id"),
+            "task": bound_task,
+        }
+
+    force_new, normalized_prompt = parse_channel_new_task(text)
+    if force_new and not normalized_prompt:
+        normalized_prompt = "Start a new task."
+
+    conversation = get_channel_conversation(payload.provider, payload.connection_id, payload.conversation_id)
+    binding = resolve_channel_binding(payload.provider, payload.connection_id, payload.conversation_id)
+
+    entry_agent_id = payload.entry_agent_id or (conversation.get("current_agent_id") if conversation else None) or (binding.get("agent_id") if binding else None)
+    entry_agent = get_agent(entry_agent_id) if entry_agent_id else default_entry_agent()
+
+    configured_enabled = payload.enabled_agent_ids or (conversation.get("enabled_agent_ids", []) if conversation else []) or (binding.get("enabled_agent_ids", []) if binding else [])
+    enabled_agent_ids = list(dict.fromkeys(configured_enabled))
+    if not enabled_agent_ids:
+        enabled_agent_ids = [entry_agent["id"]]
+    if entry_agent["id"] not in enabled_agent_ids:
+        enabled_agent_ids.insert(0, entry_agent["id"])
+    max_turns = max(
+        1,
+        int(
+            payload.max_turns
+            or (conversation.get("max_turns") if conversation else None)
+            or (binding.get("max_turns") if binding else None)
+            or DEFAULT_TASK_MAX_TURNS
+        ),
+    )
+
+    current_task = get_task(conversation["current_task_id"]) if conversation and conversation.get("current_task_id") else None
+    if current_task and current_task["status"] in {"running", "waiting_approval"} and not force_new:
+        record_channel_message(
+            provider=payload.provider,
+            connection_id=payload.connection_id,
+            conversation_id=payload.conversation_id,
+            message_id=payload.message_id,
+            sender_id=payload.sender_id,
+            task_session_id=current_task["id"],
+            direction="inbound",
+            text=text,
+            raw_payload=payload.raw,
+        )
+        return {
+            "ok": False,
+            "duplicate": False,
+            "action": "busy",
+            "task_id": current_task["id"],
+            "status": current_task["status"],
+        }
+
+    if force_new or not current_task:
+        task = create_task(
+            TaskCreatePayload(
+                title=normalized_prompt[:48] or f"{payload.provider}:{payload.conversation_id}",
+                prompt=normalized_prompt,
+                entry_agent_id=entry_agent["id"],
+                enabled_agent_ids=enabled_agent_ids,
+                max_turns=max_turns,
+                source_kind="channel",
+                source_provider=payload.provider,
+                source_connection_id=payload.connection_id,
+                source_conversation_id=payload.conversation_id,
+            )
+        )
+        record_channel_message(
+            provider=payload.provider,
+            connection_id=payload.connection_id,
+            conversation_id=payload.conversation_id,
+            message_id=payload.message_id,
+            sender_id=payload.sender_id,
+            task_session_id=task["id"],
+            direction="inbound",
+            text=text,
+            raw_payload=payload.raw,
+        )
+        upsert_channel_conversation(
+            provider=payload.provider,
+            connection_id=payload.connection_id,
+            conversation_id=payload.conversation_id,
+            current_task_id=task["id"],
+            current_agent_id=entry_agent["id"],
+            enabled_agent_ids=enabled_agent_ids,
+            max_turns=max_turns,
+        )
+        log_timeline(task["id"], "channel_message", f"{payload.provider} message received", body=text, payload={"conversation_id": payload.conversation_id, "message_id": payload.message_id, "force_new": force_new})
+        asyncio.create_task(run_task_execution(task["id"]))
+        return {
+            "ok": True,
+            "duplicate": False,
+            "action": "created",
+            "task_id": task["id"],
+            "task": get_task(task["id"]),
+        }
+
+    db.execute("UPDATE task_sessions SET updated_at = ? WHERE id = ?", (utcnow(), current_task["id"]))
+    log_timeline(
+        current_task["id"],
+        "channel_message",
+        f"{payload.provider} follow-up",
+        body=normalized_prompt,
+        payload={"conversation_id": payload.conversation_id, "message_id": payload.message_id, "force_new": False},
+    )
+    log_timeline(current_task["id"], "user_message", "Channel follow-up", body=normalized_prompt)
+    record_channel_message(
+        provider=payload.provider,
+        connection_id=payload.connection_id,
+        conversation_id=payload.conversation_id,
+        message_id=payload.message_id,
+        sender_id=payload.sender_id,
+        task_session_id=current_task["id"],
+        direction="inbound",
+        text=text,
+        raw_payload=payload.raw,
+    )
+    upsert_channel_conversation(
+        provider=payload.provider,
+        connection_id=payload.connection_id,
+        conversation_id=payload.conversation_id,
+        current_task_id=current_task["id"],
+        current_agent_id=entry_agent["id"],
+        enabled_agent_ids=enabled_agent_ids,
+        max_turns=max_turns,
+    )
+    asyncio.create_task(run_task_execution(current_task["id"], input_text=normalized_prompt))
+    return {
+        "ok": True,
+        "duplicate": False,
+        "action": "reused",
+        "task_id": current_task["id"],
+        "task": get_task(current_task["id"]),
+    }
+
+
 @app.get("/tasks/{task_id}")
 async def tasks_show(task_id: str) -> dict[str, Any]:
     return get_task(task_id)
@@ -1690,6 +2581,36 @@ async def approvals_index(run_id: str | None = Query(default=None)) -> list[dict
     if run_id:
         return db.fetchall("SELECT * FROM approvals WHERE run_id = ? ORDER BY created_at ASC", (run_id,))
     return db.fetchall("SELECT * FROM approvals ORDER BY created_at DESC")
+
+
+@app.get("/channel-bindings")
+async def channel_bindings_index() -> list[dict[str, Any]]:
+    return list_channel_bindings()
+
+
+@app.post("/channel-bindings")
+async def channel_bindings_create(payload: ChannelBindingCreatePayload) -> dict[str, Any]:
+    return create_channel_binding(payload)
+
+
+@app.patch("/channel-bindings/{binding_id}")
+async def channel_bindings_patch(binding_id: str, payload: ChannelBindingPatchPayload) -> dict[str, Any]:
+    return patch_channel_binding(binding_id, payload)
+
+
+@app.get("/channels/outbox")
+async def channels_outbox_index(connection_id: str | None = Query(default=None), limit: int = Query(default=50)) -> list[dict[str, Any]]:
+    return list_pending_channel_outbox(connection_id=connection_id, limit=limit)
+
+
+@app.post("/channels/outbox/{outbox_id}/delivered")
+async def channels_outbox_delivered(outbox_id: str) -> dict[str, Any]:
+    return mark_channel_outbox_delivered(outbox_id)
+
+
+@app.post("/channels/outbox/{outbox_id}/failed")
+async def channels_outbox_failed(outbox_id: str, payload: ChannelOutboxDecisionPayload) -> dict[str, Any]:
+    return mark_channel_outbox_failed(outbox_id, payload.error or "delivery failed")
 
 
 @app.post("/approvals/{approval_id}/approve")

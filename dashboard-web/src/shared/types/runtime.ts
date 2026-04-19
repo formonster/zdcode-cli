@@ -34,7 +34,45 @@ export type AgentProfile = {
   selected_skills: string[]
   default_model: string
   workspace_binding: string
+  channel_config?: {
+    provider?: string
+    app_id?: string
+    app_secret?: string
+    domain?: string
+    webhook?: string
+    chat_id?: string
+    push_enabled?: boolean
+    enabled?: boolean
+  }
   enabled: boolean
+}
+
+export type ChannelConnection = {
+  id: string
+  name: string
+  provider: string
+  enabled: boolean
+  app_id: string
+  app_secret: string
+  domain: string
+  webhook: string
+  created_at?: string
+  updated_at?: string
+}
+
+export type ChannelBinding = {
+  id: string
+  agent_id: string
+  agent_name: string
+  provider: string
+  connection_id: string
+  conversation_id: string
+  enabled_agent_ids: string[]
+  max_turns: number
+  push_enabled: boolean
+  enabled: boolean
+  created_at?: string
+  updated_at?: string
 }
 
 export type TimelineEvent = {

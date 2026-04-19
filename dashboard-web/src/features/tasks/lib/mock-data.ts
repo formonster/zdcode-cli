@@ -1,4 +1,4 @@
-import type { AgentProfile, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
+import type { AgentProfile, ChannelBinding, ChannelConnection, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
 
 export const mockHealth: RuntimeHealth = {
   ok: true,
@@ -57,6 +57,16 @@ export const mockAgents: AgentProfile[] = [
     selected_skills: ['frontend-design', 'openai-docs'],
     default_model: 'volcengine/ark-code-latest',
     workspace_binding: '/Users/ding/zdcode/zdcode-cli',
+    channel_config: {
+      provider: 'feishu',
+      app_id: '',
+      app_secret: '',
+      domain: 'feishu',
+      webhook: '',
+      chat_id: '',
+      push_enabled: true,
+      enabled: false,
+    },
     enabled: true,
   },
   {
@@ -69,6 +79,16 @@ export const mockAgents: AgentProfile[] = [
     selected_skills: ['vercel:agent-browser'],
     default_model: 'openai/openai-codex',
     workspace_binding: '/Users/ding/zdcode/zdcode-cli',
+    channel_config: {
+      provider: 'feishu',
+      app_id: '',
+      app_secret: '',
+      domain: 'feishu',
+      webhook: '',
+      chat_id: '',
+      push_enabled: true,
+      enabled: false,
+    },
     enabled: true,
   },
 ]
@@ -133,5 +153,33 @@ export const mockTasks: TaskSession[] = [
         body: 'RuntimeAgent is collecting trace detail.',
       },
     ],
+  },
+]
+
+export const mockChannelConnections: ChannelConnection[] = [
+  {
+    id: 'feishu-main',
+    name: 'Feishu Main',
+    provider: 'feishu',
+    enabled: true,
+    app_id: 'cli_mock_xxx',
+    app_secret: 'secret_mock_xxx',
+    domain: 'feishu',
+    webhook: '',
+  },
+]
+
+export const mockChannelBindings: ChannelBinding[] = [
+  {
+    id: 'binding-demo-1',
+    agent_id: 'demo-orchestrator',
+    agent_name: 'DemoOrchestrator',
+    provider: 'feishu',
+    connection_id: 'feishu-main',
+    conversation_id: 'oc_demo_chat',
+    enabled_agent_ids: ['demo-orchestrator', 'repo-reader'],
+    max_turns: 30,
+    push_enabled: true,
+    enabled: true,
   },
 ]

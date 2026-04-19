@@ -1,6 +1,7 @@
 import fs from 'fs'
 import { Command } from 'commander'
 import {
+  channelsBridgeAlreadyRunning,
   ensureRuntimeAvailable,
   fetchJson,
   openBrowser,
@@ -8,6 +9,7 @@ import {
   readPidIfExists,
   RuntimeHealth,
   runtimeAlreadyHealthy,
+  startChannelsBridgeDetached,
   spawnRuntimeForeground,
   startRuntimeDetached,
   tryFetchHealth,
@@ -44,6 +46,7 @@ type TaskStartOptions = {
 type RuntimeServeOptions = {
   host?: string
   port?: string
+  withChannels?: boolean
 }
 
 const readOptionalText = (value?: string, file?: string) => {
@@ -84,6 +87,9 @@ const registerDashboard = (program: Command) => {
       }
 
       const health = await waitForRuntime(baseUrl)
+      if (!channelsBridgeAlreadyRunning()) {
+        startChannelsBridgeDetached(baseUrl)
+      }
       console.log('✅ ZDCode dashboard ready')
       console.log(`- url: ${baseUrl}/dashboard/`)
       if (health.runtime) {
@@ -102,7 +108,11 @@ const registerRuntimeModule = (program: Command) => {
     .description('前台启动 Python runtime 服务')
     .option('--host <host>', '监听地址', ZDCODE_PLATFORM_HOST)
     .option('--port <port>', '监听端口', String(ZDCODE_PLATFORM_PORT))
+    .option('--with-channels', '同时启动 channels bridge', false)
     .action((options: RuntimeServeOptions) => {
+      if (options.withChannels && !channelsBridgeAlreadyRunning()) {
+        startChannelsBridgeDetached(platformBaseUrl(options.host || ZDCODE_PLATFORM_HOST, Number(options.port || ZDCODE_PLATFORM_PORT)))
+      }
       const code = spawnRuntimeForeground(options.host || ZDCODE_PLATFORM_HOST, Number(options.port || ZDCODE_PLATFORM_PORT))
       process.exit(code)
     })

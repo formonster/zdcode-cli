@@ -61,6 +61,7 @@ const PACKAGE_ROOT = resolvePackageRoot()
 export const ZDCODE_PLATFORM_HOME = path.join(os.homedir(), '.zdcode', 'platform')
 export const ZDCODE_PLATFORM_DB = path.join(ZDCODE_PLATFORM_HOME, 'zdcode-platform.db')
 export const ZDCODE_PLATFORM_PID = path.join(ZDCODE_PLATFORM_HOME, 'runtime.pid')
+export const ZDCODE_CHANNELS_BRIDGE_PID = path.join(ZDCODE_PLATFORM_HOME, 'channels-bridge.pid')
 export const ZDCODE_PLATFORM_PORT = Number(process.env.ZDCODE_PLATFORM_PORT || 4141)
 export const ZDCODE_PLATFORM_HOST = process.env.ZDCODE_PLATFORM_HOST || '127.0.0.1'
 
@@ -73,9 +74,16 @@ export const ensurePlatformDirs = () => {
 
 export const getPackageRoot = () => PACKAGE_ROOT
 
-export const getDashboardDir = () => path.join(PACKAGE_ROOT, 'dashboard')
+export const getDashboardDir = () => {
+  const modernDashboard = path.join(PACKAGE_ROOT, 'dashboard-web', 'dist')
+  if (fs.existsSync(modernDashboard)) {
+    return modernDashboard
+  }
+  return path.join(PACKAGE_ROOT, 'dashboard')
+}
 
 export const getRuntimeAppPath = () => path.join(PACKAGE_ROOT, 'python_runtime', 'app.py')
+export const getCliEntryPath = () => path.join(PACKAGE_ROOT, 'dist', 'index.js')
 
 export const getOpenAIAgentsProject = () => {
   const configured = process.env.ZDCODE_OPENAI_AGENTS_PROJECT?.trim()
@@ -214,6 +222,41 @@ export const readPidIfExists = () => {
   const raw = fs.readFileSync(ZDCODE_PLATFORM_PID, 'utf-8').trim()
   const pid = Number(raw)
   return Number.isFinite(pid) ? pid : null
+}
+
+const processAlive = (pid: number | null) => {
+  if (!pid || !Number.isFinite(pid)) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export const channelsBridgeAlreadyRunning = () => {
+  if (!fs.existsSync(ZDCODE_CHANNELS_BRIDGE_PID)) {
+    return false
+  }
+  const pid = Number(fs.readFileSync(ZDCODE_CHANNELS_BRIDGE_PID, 'utf-8').trim())
+  return processAlive(pid)
+}
+
+export const startChannelsBridgeDetached = (baseUrl: string) => {
+  ensurePlatformDirs()
+  const child = spawn(process.execPath, [getCliEntryPath(), 'channels', 'bridge', '--runtime-url', baseUrl], {
+    cwd: getPackageRoot(),
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      ZDCODE_PLATFORM_DB,
+      ZDCODE_DASHBOARD_DIR: getDashboardDir(),
+    },
+  })
+  child.unref()
+  fs.writeFileSync(ZDCODE_CHANNELS_BRIDGE_PID, String(child.pid))
+  return child.pid
 }
 
 export const ensureRuntimeAvailable = async () => {

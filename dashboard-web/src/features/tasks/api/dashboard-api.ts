@@ -1,7 +1,7 @@
 import { runtimeFetch } from '@/shared/api/runtime-client'
-import type { AgentProfile, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
+import type { AgentProfile, ChannelBinding, ChannelConnection, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
 
-import { mockAgents, mockHealth, mockModels, mockSkills, mockTasks } from '../lib/mock-data'
+import { mockAgents, mockChannelBindings, mockChannelConnections, mockHealth, mockModels, mockSkills, mockTasks } from '../lib/mock-data'
 
 async function fallback<T>(request: Promise<T>, substitute: T): Promise<T> {
   try {
@@ -37,6 +37,58 @@ export function getSkills() {
 
 export function getModels() {
   return fallback(runtimeFetch<ModelRecord[]>('/models'), mockModels)
+}
+
+export function getChannelConnections() {
+  return fallback(runtimeFetch<ChannelConnection[]>('/channel-connections'), mockChannelConnections)
+}
+
+export function getChannelConnection(connectionId: string) {
+  return fallback(
+    runtimeFetch<ChannelConnection>(`/channel-connections/${connectionId}`),
+    mockChannelConnections.find((item) => item.id === connectionId) ?? mockChannelConnections[0],
+  )
+}
+
+export function createChannelConnection(payload: ChannelConnection) {
+  return runtimeFetch<ChannelConnection>('/channel-connections', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateChannelConnection(connectionId: string, payload: Partial<ChannelConnection>) {
+  return runtimeFetch<ChannelConnection>(`/channel-connections/${connectionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getChannelBindings() {
+  return fallback(runtimeFetch<ChannelBinding[]>('/channel-bindings'), mockChannelBindings)
+}
+
+export function createChannelBinding(payload: {
+  agent_id: string
+  provider: string
+  connection_id: string
+  conversation_id: string
+  enabled_agent_ids: string[]
+  max_turns: number
+  push_enabled: boolean
+  enabled: boolean
+}) {
+  return runtimeFetch<ChannelBinding>('/channel-bindings', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateChannelBinding(bindingId: string, payload: Partial<ChannelBinding>) {
+  return runtimeFetch<ChannelBinding>(`/channel-bindings/${bindingId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function createTask(payload: {
@@ -82,6 +134,7 @@ export function createAgent(payload: Partial<AgentProfile> & Pick<AgentProfile, 
         provider: 'mem0',
         scope: payload.name,
       },
+      channel_config: payload.channel_config ?? {},
       enabled: payload.enabled ?? true,
     }),
   })

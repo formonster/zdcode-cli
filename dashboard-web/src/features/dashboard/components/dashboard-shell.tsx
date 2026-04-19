@@ -84,7 +84,7 @@ export function DashboardShell() {
       return <TaskDetail task={taskDetailQuery.data} />
     }
     return <NewTaskForm agents={agents} />
-  }, [agentDetailQuery.data, agents, models, selection.type, skills, taskDetailQuery.data])
+  }, [agentDetailQuery.data, agents, models, selection, skills, taskDetailQuery.data])
 
   return (
     <div className="h-screen overflow-hidden p-3">

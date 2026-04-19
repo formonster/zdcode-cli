@@ -48,6 +48,16 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
       skills_prompt: agent?.skills_prompt ?? '',
       selected_skills: agent?.selected_skills ?? [],
       workspace_binding: agent?.workspace_binding ?? '/Users/ding/zdcode/zdcode-cli',
+      channel_config: {
+        provider: agent?.channel_config?.provider ?? 'feishu',
+        app_id: agent?.channel_config?.app_id ?? '',
+        app_secret: agent?.channel_config?.app_secret ?? '',
+        domain: agent?.channel_config?.domain ?? 'feishu',
+        webhook: agent?.channel_config?.webhook ?? '',
+        chat_id: agent?.channel_config?.chat_id ?? '',
+        push_enabled: agent?.channel_config?.push_enabled ?? true,
+        enabled: agent?.channel_config?.enabled ?? false,
+      },
       enabled: agent?.enabled ?? true,
     },
     onSubmit: async ({ value }) => {
@@ -65,6 +75,16 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
       skills_prompt: agent?.skills_prompt ?? '',
       selected_skills: agent?.selected_skills ?? [],
       workspace_binding: agent?.workspace_binding ?? '/Users/ding/zdcode/zdcode-cli',
+      channel_config: {
+        provider: agent?.channel_config?.provider ?? 'feishu',
+        app_id: agent?.channel_config?.app_id ?? '',
+        app_secret: agent?.channel_config?.app_secret ?? '',
+        domain: agent?.channel_config?.domain ?? 'feishu',
+        webhook: agent?.channel_config?.webhook ?? '',
+        chat_id: agent?.channel_config?.chat_id ?? '',
+        push_enabled: agent?.channel_config?.push_enabled ?? true,
+        enabled: agent?.channel_config?.enabled ?? false,
+      },
       enabled: agent?.enabled ?? true,
     })
   }, [agent, form, mode, models])
@@ -195,6 +215,53 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
                     </div>
                   )}
                 />
+
+                <div className="rounded-[20px] border border-white/8 bg-black/10 p-3">
+                  <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                    <Sparkles className="size-3.5" />
+                    Feishu Channel
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <form.Field
+                      name="channel_config.app_id"
+                      children={(field) => <Input value={field.state.value} onChange={(event) => field.handleChange(event.target.value)} placeholder="appId" />}
+                    />
+                    <form.Field
+                      name="channel_config.app_secret"
+                      children={(field) => <Input value={field.state.value} onChange={(event) => field.handleChange(event.target.value)} placeholder="appSecret" />}
+                    />
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <form.Field
+                      name="channel_config.chat_id"
+                      children={(field) => <Input value={field.state.value} onChange={(event) => field.handleChange(event.target.value)} placeholder="chatId / oc_xxx" />}
+                    />
+                    <form.Field
+                      name="channel_config.domain"
+                      children={(field) => <Input value={field.state.value} onChange={(event) => field.handleChange(event.target.value)} placeholder="feishu" />}
+                    />
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <form.Field
+                      name="channel_config.webhook"
+                      children={(field) => <Input value={field.state.value} onChange={(event) => field.handleChange(event.target.value)} placeholder="optional webhook" />}
+                    />
+                    <form.Field
+                      name="channel_config.enabled"
+                      children={(field) => (
+                        <button
+                          type="button"
+                          onClick={() => field.handleChange(!field.state.value)}
+                          className={`h-11 rounded-2xl border px-4 text-sm text-left ${
+                            field.state.value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-white/8 bg-white/[0.03] text-muted-foreground'
+                          }`}
+                        >
+                          {field.state.value ? 'Feishu enabled' : 'Feishu disabled'}
+                        </button>
+                      )}
+                    />
+                  </div>
+                </div>
               </div>
             </ScrollArea>
 
