@@ -1,16 +1,15 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import { Activity, ArrowUp, Bot, Circle, Gauge, TerminalSquare } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { useDashboardStore } from '@/features/dashboard/store/dashboard-store'
 import { sendTaskMessage } from '@/features/tasks/api/dashboard-api'
 import type { TaskSession, TimelineEvent } from '@/shared/types/runtime'
 import * as ScrollAreaPrimitive from '@radix-ui/react-scroll-area'
+import { useAutoScroll } from '@/shared/hooks/use-auto-scroll'
 
 function eventColor(eventType: string) {
   if (eventType.includes('tool')) return 'border-cyan-400/20 bg-cyan-400/6'
@@ -49,9 +48,8 @@ export function TaskDetail({ task }: Props) {
   const setComposerValue = useDashboardStore((state) => state.setComposerValue)
   const queryClient = useQueryClient()
 
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const [shouldAutoScroll, setShouldAutoScroll] = useState(true)
-  const previousTimelineLength = useRef(0)
+  const timelineLength = task?.timeline?.length ?? 0
+  const { containerRef, handleScroll } = useAutoScroll(timelineLength)
 
   const messageMutation = useMutation({
     mutationFn: async () => {
@@ -71,57 +69,6 @@ export function TaskDetail({ task }: Props) {
     },
   })
 
-  // Check if user is at the bottom of the scroll
-  const checkIfAtBottom = () => {
-    const container = viewportRef.current
-    if (!container) return true
-    
-    const { scrollTop, scrollHeight, clientHeight } = container
-    // Allow a small threshold for floating point errors
-    const threshold = 1
-    return scrollHeight - scrollTop - clientHeight <= threshold
-  }
-
-  // Scroll to bottom function
-  const scrollToBottom = () => {
-    const container = viewportRef.current
-    if (!container) return
-    
-    container.scrollTop = container.scrollHeight
-  }
-
-  // Handle scroll event to determine if we should auto-scroll
-  const handleScroll = () => {
-    const isAtBottom = checkIfAtBottom()
-    setShouldAutoScroll(isAtBottom)
-  }
-
-  // Initial scroll to bottom on load
-  useEffect(() => {
-    if (task && viewportRef.current) {
-      // Wait for content to render before scrolling
-      const timer = setTimeout(() => {
-        scrollToBottom()
-      }, 100)
-      return () => clearTimeout(timer)
-    }
-  }, [task])
-
-  // Auto-scroll when timeline updates if we should
-  useEffect(() => {
-    const currentTimelineLength = task?.timeline?.length ?? 0
-    
-    // If it's the first load or we should auto-scroll
-    if ((currentTimelineLength > previousTimelineLength.current || previousTimelineLength.current === 0) && shouldAutoScroll) {
-      // Use a small delay to wait for the new content to be rendered
-      setTimeout(() => {
-        scrollToBottom()
-      }, 50)
-    }
-    
-    previousTimelineLength.current = currentTimelineLength
-  }, [task?.timeline?.length, shouldAutoScroll])
-
   if (!task) {
     return (
       <div className="panel-surface codex-grid flex h-[calc(100vh-24px)] items-center justify-center rounded-[28px]">
@@ -138,7 +85,7 @@ export function TaskDetail({ task }: Props) {
       <div className="min-h-0 flex-1 overflow-hidden rounded-[24px] border border-white/8 bg-black/10">
         <ScrollAreaPrimitive.Root className="relative h-full overflow-hidden pr-2">
           <ScrollAreaPrimitive.Viewport 
-            ref={viewportRef} 
+            ref={containerRef} 
             onScroll={handleScroll}
             className="size-full rounded-[inherit]"
           >
