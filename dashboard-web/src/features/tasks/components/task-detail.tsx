@@ -69,6 +69,16 @@ export function TaskDetail({ task }: Props) {
     },
   })
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Send on Enter (without Shift), allow Shift+Enter for new line
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      if (composerValue.trim() && !messageMutation.isPending) {
+        void messageMutation.mutateAsync()
+      }
+    }
+  }
+
   if (!task) {
     return (
       <div className="panel-surface codex-grid flex h-[calc(100vh-24px)] items-center justify-center rounded-[28px]">
@@ -113,9 +123,10 @@ export function TaskDetail({ task }: Props) {
         <textarea
           value={composerValue}
           onChange={(event) => setComposerValue(event.target.value)}
+          onKeyDown={handleKeyDown}
           rows={4}
           className="w-full resize-none bg-transparent text-sm leading-6 outline-none placeholder:text-muted-foreground"
-          placeholder="Continue this task..."
+          placeholder="Continue this task... (Enter to send, Shift+Enter for new line)"
         />
         <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-xs text-muted-foreground">
