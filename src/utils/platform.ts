@@ -75,7 +75,7 @@ export const ensurePlatformDirs = () => {
 export const getPackageRoot = () => PACKAGE_ROOT
 
 export const getDashboardDir = () => {
-  const modernDashboard = path.join(PACKAGE_ROOT, 'dashboard-web', 'dist')
+  const modernDashboard = path.join(PACKAGE_ROOT, 'dashboard', 'dist')
   if (fs.existsSync(modernDashboard)) {
     return modernDashboard
   }
