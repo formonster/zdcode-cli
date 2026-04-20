@@ -1262,17 +1262,35 @@ def list_skills() -> list[dict[str, Any]]:
     return sorted(seen.values(), key=lambda item: item["name"].lower())
 
 
-def selected_skill_summaries(skill_ids: list[str], *, limit: int = 6) -> list[str]:
+def selected_skill_records(skill_ids: list[str], *, limit: int = 6) -> list[dict[str, str]]:
     if not skill_ids:
         return []
-    descriptions = {item["id"]: trim_prompt_block(item.get("description") or "") for item in list_skills()}
-    summaries: list[str] = []
+
+    skill_lookup = {item["id"]: item for item in list_skills()}
+    records: list[dict[str, str]] = []
     for skill_id in skill_ids[:limit]:
-        description = descriptions.get(skill_id, "")
+        skill = skill_lookup.get(skill_id)
+        if not skill:
+            continue
+        records.append(
+            {
+                "id": skill_id,
+                "name": str(skill.get("name") or skill_id),
+                "description": trim_prompt_block(skill.get("description") or ""),
+                "path": str(skill.get("path") or ""),
+            }
+        )
+    return records
+
+
+def selected_skill_summaries(skill_ids: list[str], *, limit: int = 6) -> list[str]:
+    summaries: list[str] = []
+    for skill in selected_skill_records(skill_ids, limit=limit):
+        description = skill.get("description") or ""
         if description:
-            summaries.append(f"{skill_id}: {description[:140]}")
+            summaries.append(f"{skill['id']}: {description[:140]}")
         else:
-            summaries.append(skill_id)
+            summaries.append(skill["id"])
     return summaries
 
 
@@ -2055,7 +2073,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
     if not import_available("agents"):
         raise RuntimeError("openai-agents is not available in the runtime environment.")
 
-    from agents import Agent, ApplyPatchTool, ComputerProvider, ComputerTool, ModelSettings, MultiProvider, OpenAIProvider, Runner, RunConfig, SQLiteSession, ShellTool, apply_diff, function_tool, set_tracing_disabled
+    from agents import Agent, ApplyPatchTool, ComputerProvider, ComputerTool, ModelSettings, MultiProvider, OpenAIProvider, Runner, RunConfig, SQLiteSession, ShellTool, ShellToolLocalSkill, apply_diff, function_tool, set_tracing_disabled
     from agents.models.multi_provider import MultiProviderMap
     from agents.editor import ApplyPatchOperation, ApplyPatchResult
     from agents.tool import ShellActionRequest, ShellCommandRequest
@@ -2163,6 +2181,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         selected_skills = agent_profile.get("selected_skills", [])
         global_system_prompt = current_settings().get("global_system_prompt", "").strip()
         compressed_context = str(active_task.get("compressed_context") or "").strip()
+        skill_records = selected_skill_records(selected_skills)
         skill_summaries = selected_skill_summaries(selected_skills)
 
         sections: list[str] = []
@@ -2177,8 +2196,24 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         ]
         sections.append("\n\n".join(part for part in agent_lines if trim_prompt_block(part)))
 
-        if skill_summaries:
-            sections.append("# Enabled capabilities\n" + "\n".join(f"- {item}" for item in skill_summaries))
+        bootstrap_wakeup_prompt = (
+            active_task.get("source_kind") == "channel" and current_input.strip() == CHANNEL_NEW_TASK_PROMPT
+        )
+
+        if skill_records:
+            skill_lines = []
+            for skill in skill_records:
+                path = skill.get("path") or skill["id"]
+                description = skill.get("description") or "No description provided."
+                skill_lines.append(f"- {skill['id']}: {description} (file: {path})")
+            sections.append(
+                "# Selected skills\n"
+                "The following selected skills are available on disk.\n"
+                "If the current user request clearly matches one of them or explicitly names it, read that skill's `SKILL.md` from the listed file path before acting.\n"
+                "When a selected skill mentions `references/`, `scripts/`, or `assets/`, resolve those paths relative to the skill directory, not the workspace.\n"
+                "Do not auto-activate a skill from greetings, wake-up phrases, generic acknowledgements, or channel bootstrap prompts such as /new.\n\n"
+                + "\n".join(skill_lines)
+            )
 
         runtime_items = [
             f"Agent: {agent_profile['name']}",
@@ -2188,6 +2223,10 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             f"Enabled specialist agents: {', '.join(profile['name'] for profile in enabled_agents if profile['id'] != agent_profile['id']) or 'none'}",
             f"Task source: {active_task.get('source_kind') or 'manual'}",
         ]
+        if bootstrap_wakeup_prompt:
+            runtime_items.append(
+                "Bootstrap note: the current user input was generated from the channel /new command. Treat '醒醒，朋友~' as a plain wake-up greeting, not as a request to activate any mode or skill."
+            )
         if is_orchestrator:
             runtime_items.append(
                 "Execution rule: you own the user-facing result and should delegate only when a specialist materially improves the outcome."
@@ -2217,6 +2256,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             "agent_responsibility_prompt": agent_profile["agent_responsibility_prompt"],
             "agent_non_goals_prompt": agent_profile["agent_non_goals_prompt"],
             "selected_skills": selected_skills,
+            "skill_records": skill_records,
             "skill_summaries": skill_summaries,
             "global_system_prompt": global_system_prompt,
             "compressed_context": compressed_context,
@@ -2406,6 +2446,18 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         workspace = Path(agent_profile["workspace_binding"]).expanduser().resolve()
         tool_profile = agent_profile["tool_profile"]
         tools: list[Any] = []
+        shell_skills: list[ShellToolLocalSkill] = []
+        for skill in selected_skill_records(agent_profile.get("selected_skills", []), limit=12):
+            skill_path = Path(skill.get("path") or "").expanduser().resolve()
+            if not skill_path.exists():
+                continue
+            shell_skills.append(
+                {
+                    "name": skill["id"],
+                    "description": skill.get("description") or "No description provided.",
+                    "path": str(skill_path.parent),
+                }
+            )
 
         async def shell_executor(request: ShellCommandRequest) -> str:
             outputs = []
@@ -2430,7 +2482,16 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             return any(risk_from_command(command) for command in action.commands)
 
         if hosted_tools_supported and tool_profile.get("shell", True):
-            tools.append(ShellTool(executor=shell_executor, needs_approval=shell_needs_approval))
+            shell_environment: dict[str, Any] = {"type": "local"}
+            if shell_skills:
+                shell_environment["skills"] = shell_skills
+            tools.append(
+                ShellTool(
+                    executor=shell_executor,
+                    needs_approval=shell_needs_approval,
+                    environment=shell_environment,
+                )
+            )
 
         if hosted_tools_supported and tool_profile.get("filesystem", True):
             editor = WorkspaceEditor(workspace, task["id"], agent_profile["id"], agent_profile["name"], run_id)
@@ -2948,13 +3009,16 @@ async def tasks_delete(task_id: str) -> dict[str, Any]:
     return delete_task(task_id)
 
 
+CHANNEL_NEW_TASK_PROMPT = "醒醒，朋友~"
+
+
 def parse_channel_new_task(text: str) -> tuple[bool, str]:
     stripped = text.strip()
     if not stripped:
         return False, ""
     lowered = stripped.lower()
     if lowered == "/new":
-        return True, ""
+        return True, CHANNEL_NEW_TASK_PROMPT
     if lowered.startswith("/new "):
         return True, stripped[5:].strip()
     return False, stripped
@@ -2981,8 +3045,6 @@ async def channels_message(payload: ChannelInboundPayload) -> dict[str, Any]:
         }
 
     force_new, normalized_prompt = parse_channel_new_task(text)
-    if force_new and not normalized_prompt:
-        normalized_prompt = "Start a new task."
 
     conversation = get_channel_conversation(payload.provider, payload.connection_id, payload.conversation_id)
     binding = resolve_channel_binding(payload.provider, payload.connection_id, payload.conversation_id)
