@@ -62,6 +62,7 @@ export const ZDCODE_PLATFORM_HOME = path.join(os.homedir(), '.zdcode', 'platform
 export const ZDCODE_PLATFORM_DB = path.join(ZDCODE_PLATFORM_HOME, 'zdcode-platform.db')
 export const ZDCODE_PLATFORM_PID = path.join(ZDCODE_PLATFORM_HOME, 'runtime.pid')
 export const ZDCODE_CHANNELS_BRIDGE_PID = path.join(ZDCODE_PLATFORM_HOME, 'channels-bridge.pid')
+export const ZDCODE_CHANNELS_BRIDGE_LOCK = path.join(ZDCODE_PLATFORM_HOME, 'channels-bridge.lock')
 export const ZDCODE_PLATFORM_PORT = Number(process.env.ZDCODE_PLATFORM_PORT || 4141)
 export const ZDCODE_PLATFORM_HOST = process.env.ZDCODE_PLATFORM_HOST || '127.0.0.1'
 

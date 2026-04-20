@@ -97,12 +97,25 @@ export const startFeishuProviderConnection = async (params: {
 
   dispatcher.register({
     'im.message.receive_v1': async (data: unknown) => {
-      const parsed = normalizeIncomingFeishuMessage(data as FeishuMessageReceiveEvent)
-      if (!parsed) return
-      if (raw && logger) {
-        logger(JSON.stringify(data))
+      try {
+        const parsed = normalizeIncomingFeishuMessage(data as FeishuMessageReceiveEvent)
+        if (!parsed) {
+          logger?.(
+            `[${new Date().toISOString()}] channels connection=${connection.id} provider=feishu skipped message because it could not be normalized: ${JSON.stringify(data)}`,
+          )
+          return
+        }
+        if (raw && logger) {
+          logger(JSON.stringify(data))
+        }
+        await onMessage(toInboundMessage(connection, parsed))
+      } catch (error) {
+        const message = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error)
+        logger?.(
+          `[${new Date().toISOString()}] channels connection=${connection.id} provider=feishu handler error: ${message}; payload=${JSON.stringify(data)}`,
+        )
+        throw error
       }
-      await onMessage(toInboundMessage(connection, parsed))
     },
   })
 

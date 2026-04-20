@@ -1,5 +1,12 @@
+import fs from 'fs'
 import { Command } from 'commander'
-import { ensureRuntimeAvailable, fetchJson } from '../../utils/platform'
+import {
+  ensurePlatformDirs,
+  ensureRuntimeAvailable,
+  fetchJson,
+  ZDCODE_CHANNELS_BRIDGE_LOCK,
+  ZDCODE_CHANNELS_BRIDGE_PID,
+} from '../../utils/platform'
 import {
   createChannelConnection,
   initChannelsStore,
@@ -59,6 +66,106 @@ type BridgeOptions = {
   pollInterval?: string
   runtimeUrl?: string
 }
+
+const processAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const acquireBridgeLock = () => {
+  ensurePlatformDirs()
+  const pid = process.pid
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(ZDCODE_CHANNELS_BRIDGE_LOCK, 'wx')
+      fs.writeFileSync(fd, `${pid}\n`, 'utf-8')
+      fs.closeSync(fd)
+      fs.writeFileSync(ZDCODE_CHANNELS_BRIDGE_PID, `${pid}\n`, 'utf-8')
+
+      let released = false
+      const release = () => {
+        if (released) return
+        released = true
+        try {
+          const current = fs.existsSync(ZDCODE_CHANNELS_BRIDGE_LOCK)
+            ? fs.readFileSync(ZDCODE_CHANNELS_BRIDGE_LOCK, 'utf-8').trim()
+            : ''
+          if (current === String(pid)) {
+            fs.unlinkSync(ZDCODE_CHANNELS_BRIDGE_LOCK)
+          }
+        } catch {
+          // ignore cleanup failures
+        }
+        try {
+          const currentPid = fs.existsSync(ZDCODE_CHANNELS_BRIDGE_PID)
+            ? fs.readFileSync(ZDCODE_CHANNELS_BRIDGE_PID, 'utf-8').trim()
+            : ''
+          if (currentPid === String(pid)) {
+            fs.unlinkSync(ZDCODE_CHANNELS_BRIDGE_PID)
+          }
+        } catch {
+          // ignore cleanup failures
+        }
+      }
+
+      process.once('exit', release)
+      process.once('SIGINT', () => {
+        release()
+        process.exit(130)
+      })
+      process.once('SIGTERM', () => {
+        release()
+        process.exit(143)
+      })
+
+      return release
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException
+      if (nodeError.code !== 'EEXIST') {
+        throw error
+      }
+
+      const raw = fs.existsSync(ZDCODE_CHANNELS_BRIDGE_LOCK) ? fs.readFileSync(ZDCODE_CHANNELS_BRIDGE_LOCK, 'utf-8').trim() : ''
+      const existingPid = Number(raw)
+      if (Number.isFinite(existingPid) && processAlive(existingPid)) {
+        throw new Error(`Channels bridge is already running (pid ${existingPid}).`)
+      }
+
+      try {
+        fs.unlinkSync(ZDCODE_CHANNELS_BRIDGE_LOCK)
+      } catch {
+        // ignore stale lock cleanup races
+      }
+    }
+  }
+
+  throw new Error('Unable to acquire channels bridge lock.')
+}
+
+const toRuntimeInboundPayload = (message: {
+  provider: string
+  connectionId: string
+  conversationId: string
+  messageId: string
+  senderId: string
+  text: string
+  receivedAt: string
+  raw?: unknown
+}) => ({
+  provider: message.provider,
+  connection_id: message.connectionId,
+  conversation_id: message.conversationId,
+  message_id: message.messageId,
+  sender_id: message.senderId,
+  text: message.text,
+  received_at: message.receivedAt,
+  raw: message.raw,
+})
 
 const printConnection = (connection: ReturnType<typeof resolveChannelConnection>) => {
   console.log(`- id: ${connection.id}`)
@@ -288,7 +395,7 @@ const registerServeCommand = (channels: Command) => {
             }>(`${runtimeBaseUrl}/channels/messages`, {
               method: 'POST',
               body: JSON.stringify({
-                ...message,
+                ...toRuntimeInboundPayload(message),
                 entry_agent_id: options.entryAgent,
                 enabled_agent_ids: Array.from(new Set([...(options.enableAgent || []), ...(options.entryAgent ? [options.entryAgent] : [])])),
                 max_turns: options.maxTurns ? Number(options.maxTurns) : undefined,
@@ -367,17 +474,29 @@ const registerBridgeCommand = (channels: Command) => {
     .option('--runtime-url <url>', 'runtime 地址；默认自动发现本地 runtime')
     .action(async (options: BridgeOptions) => {
       try {
+        const releaseBridgeLock = acquireBridgeLock()
         const runtimeBaseUrl = options.runtimeUrl?.trim() || (await ensureRuntimeAvailable())
         const bindingByKey = new Map<string, any>()
+        const defaultBindingByConnection = new Map<string, any>()
         const connections = new Set<string>()
         const pollInterval = Math.max(500, Number(options.pollInterval || 2000))
         let announcedWaiting = false
         const ensureListeners = async () => {
           const bindings = await fetchJson<any[]>(`${runtimeBaseUrl}/channel-bindings`)
           const activeBindings = bindings.filter((item) => item.enabled)
+          const bindingsByConnection = new Map<string, any[]>()
           bindingByKey.clear()
+          defaultBindingByConnection.clear()
           activeBindings.forEach((item) => {
             bindingByKey.set(`${item.provider}:${item.connection_id}:${item.conversation_id}`, item)
+            const existing = bindingsByConnection.get(item.connection_id) || []
+            existing.push(item)
+            bindingsByConnection.set(item.connection_id, existing)
+          })
+          bindingsByConnection.forEach((items, connectionId) => {
+            if (items.length === 1 && connectionId.startsWith('agent-')) {
+              defaultBindingByConnection.set(connectionId, items[0])
+            }
           })
 
           for (const item of activeBindings) {
@@ -388,8 +507,14 @@ const registerBridgeCommand = (channels: Command) => {
               connectionId: item.connection_id,
               logger: (line) => console.log(line),
               onMessage: async (message) => {
-                const binding = bindingByKey.get(`${message.provider}:${message.connectionId}:${message.conversationId}`)
+                const exactBinding = bindingByKey.get(`${message.provider}:${message.connectionId}:${message.conversationId}`)
+                const binding = exactBinding || defaultBindingByConnection.get(message.connectionId)
                 if (!binding) {
+                  await sendChannelMessage({
+                    connectionId: message.connectionId,
+                    target: `chat:${message.conversationId}`,
+                    text: '当前会话还没有绑定到 Agent，所以我还不能处理这条消息。请先在 dashboard 里为这个 chat 创建 binding，或使用该 Agent 已配置的会话发送消息。',
+                  }).catch(() => undefined)
                   console.log(
                     JSON.stringify({
                       channel: message.provider,
@@ -405,7 +530,7 @@ const registerBridgeCommand = (channels: Command) => {
                 const result = await fetchJson<any>(`${runtimeBaseUrl}/channels/messages`, {
                   method: 'POST',
                   body: JSON.stringify({
-                    ...message,
+                    ...toRuntimeInboundPayload(message),
                     entry_agent_id: binding.agent_id,
                     enabled_agent_ids: binding.enabled_agent_ids,
                     max_turns: binding.max_turns,
@@ -426,6 +551,7 @@ const registerBridgeCommand = (channels: Command) => {
                     connection: message.connectionId,
                     conversation: message.conversationId,
                     message_id: message.messageId,
+                    binding_mode: exactBinding ? 'exact' : 'connection_default',
                     runtime_action: result.action,
                     task_id: result.task_id,
                     duplicate: result.duplicate || false,
@@ -457,6 +583,16 @@ const registerBridgeCommand = (channels: Command) => {
             const pending = await fetchJson<any[]>(`${runtimeBaseUrl}/channels/outbox?limit=50`)
             for (const item of pending) {
               try {
+                const claim = await fetchJson<{ ok: boolean; claimed: boolean; item?: any }>(
+                  `${runtimeBaseUrl}/channels/outbox/${item.id}/claim`,
+                  {
+                    method: 'POST',
+                    body: JSON.stringify({}),
+                  },
+                )
+                if (!claim.claimed) {
+                  continue
+                }
                 await sendChannelMessage({
                   connectionId: item.connection_id,
                   target: `chat:${item.conversation_id}`,
@@ -482,6 +618,7 @@ const registerBridgeCommand = (channels: Command) => {
 
         console.log(`✅ Channels bridge started (${connections.size} connection(s))`)
         await new Promise<void>(() => undefined)
+        releaseBridgeLock()
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         console.error(`❌ ${message}`)

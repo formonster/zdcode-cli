@@ -21,6 +21,11 @@ const defaultStore = (): ChannelConnectionsStore => ({
   connections: {},
 })
 
+const withConnectionId = (id: string, connection: ChannelConnectionRecord | Omit<ChannelConnectionRecord, 'id'>) => ({
+  ...connection,
+  id,
+}) as ChannelConnectionRecord
+
 export const initChannelsStore = () => {
   ensureDir(ZDCODE_CHANNELS_HOME)
   if (!fs.existsSync(ZDCODE_CHANNELS_CONNECTIONS_PATH)) {
@@ -54,7 +59,10 @@ export const writeChannelsStore = (store: ChannelConnectionsStore) => {
   fs.writeFileSync(ZDCODE_CHANNELS_CONNECTIONS_PATH, `${JSON.stringify(store, null, 2)}\n`, 'utf-8')
 }
 
-export const listChannelConnections = () => Object.values(readChannelsStore().connections).sort((a, b) => a.name.localeCompare(b.name))
+export const listChannelConnections = () =>
+  Object.entries(readChannelsStore().connections)
+    .map(([id, connection]) => withConnectionId(id, connection))
+    .sort((a, b) => a.name.localeCompare(b.name))
 
 export const resolveChannelConnection = (id: string) => {
   const store = readChannelsStore()
@@ -62,7 +70,7 @@ export const resolveChannelConnection = (id: string) => {
   if (!connection) {
     throw new Error(`Channel connection "${id}" not found in ${ZDCODE_CHANNELS_CONNECTIONS_PATH}`)
   }
-  return connection
+  return withConnectionId(id, connection)
 }
 
 export const createChannelConnection = (connection: Omit<ChannelConnectionRecord, 'createdAt' | 'updatedAt'>) => {

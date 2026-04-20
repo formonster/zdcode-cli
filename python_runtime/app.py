@@ -452,6 +452,10 @@ class ChannelOutboxDecisionPayload(BaseModel):
     error: str = ""
 
 
+class ChannelOutboxClaimPayload(BaseModel):
+    pass
+
+
 class ChannelConnectionCreatePayload(BaseModel):
     id: str
     name: str
@@ -1664,10 +1668,43 @@ def list_pending_channel_outbox(connection_id: str | None = None, limit: int = 5
     return [normalize_channel_outbox(item) for item in rows]
 
 
+def claim_channel_outbox(outbox_id: str) -> dict[str, Any]:
+    with db._lock:
+        current = normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,)))
+        if not current:
+            raise HTTPException(status_code=404, detail=f"Channel outbox item not found: {outbox_id}")
+        if current["status"] != "pending":
+            return {
+                "ok": True,
+                "claimed": False,
+                "item": current,
+            }
+
+        cursor = db._conn.execute(
+            """
+            UPDATE channel_outbox
+            SET status = 'sending', updated_at = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (utcnow(), outbox_id),
+        )
+        db._conn.commit()
+
+        claimed = cursor.rowcount > 0
+        item = normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,))) or {}
+        return {
+            "ok": True,
+            "claimed": claimed,
+            "item": item,
+        }
+
+
 def mark_channel_outbox_delivered(outbox_id: str) -> dict[str, Any]:
     current = normalize_channel_outbox(db.fetchone("SELECT * FROM channel_outbox WHERE id = ?", (outbox_id,)))
     if not current:
         raise HTTPException(status_code=404, detail=f"Channel outbox item not found: {outbox_id}")
+    if current["status"] == "delivered":
+        return current
     db.execute(
         """
         UPDATE channel_outbox
@@ -3042,7 +3079,6 @@ async def channels_message(payload: ChannelInboundPayload) -> dict[str, Any]:
         body=normalized_prompt,
         payload={"conversation_id": payload.conversation_id, "message_id": payload.message_id, "force_new": False},
     )
-    log_timeline(current_task["id"], "user_message", "Channel follow-up", body=normalized_prompt)
     record_channel_message(
         provider=payload.provider,
         connection_id=payload.connection_id,
@@ -3113,6 +3149,12 @@ async def channel_bindings_patch(binding_id: str, payload: ChannelBindingPatchPa
 @app.get("/channels/outbox")
 async def channels_outbox_index(connection_id: str | None = Query(default=None), limit: int = Query(default=50)) -> list[dict[str, Any]]:
     return list_pending_channel_outbox(connection_id=connection_id, limit=limit)
+
+
+@app.post("/channels/outbox/{outbox_id}/claim")
+async def channels_outbox_claim(outbox_id: str, payload: ChannelOutboxClaimPayload) -> dict[str, Any]:
+    _ = payload
+    return claim_channel_outbox(outbox_id)
 
 
 @app.post("/channels/outbox/{outbox_id}/delivered")
