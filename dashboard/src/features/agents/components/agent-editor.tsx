@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from '@tanstack/react-form'
 import { Bot, ImagePlus, Sparkles, Trash2 } from 'lucide-react'
@@ -24,6 +24,8 @@ type Props = {
 export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
   const queryClient = useQueryClient()
   const setSelection = useDashboardStore((state) => state.setSelection)
+  const [skillSearch, setSkillSearch] = useState('')
+  
   const mutation = useMutation({
     mutationFn: async (value: AgentProfile) => {
       if (mode === 'edit' && agent) {
@@ -104,6 +106,12 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
       enabled: agent?.enabled ?? true,
     })
   }, [agent, form, mode, models])
+
+  // Filter skills based on search query
+  const filteredSkills = skills.filter(skill => 
+    skill.name.toLowerCase().includes(skillSearch.toLowerCase()) || 
+    skill.description.toLowerCase().includes(skillSearch.toLowerCase())
+  )
 
   return (
     <div className="flex h-full flex-col gap-3">
@@ -227,12 +235,23 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
                   name="selected_skills"
                   children={(field) => (
                     <div className="rounded-[20px] border border-white/8 bg-black/10 p-3">
-                      <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                      <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-muted-foreground">
                         <Sparkles className="size-3.5" />
                         Skills
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        {skills.map((skill) => {
+                      
+                      {/* Search input */}
+                      <Input
+                        type="text"
+                        placeholder="Search skills by name or description..."
+                        value={skillSearch}
+                        onChange={(e) => setSkillSearch(e.target.value)}
+                        className="mb-3"
+                      />
+
+                      {/* Skills list */}
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                        {filteredSkills.map((skill) => {
                           const selected = field.state.value.includes(skill.id)
                           return (
                             <button
@@ -245,16 +264,32 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
                                     : [...field.state.value, skill.id],
                                 )
                               }
-                              className={`rounded-full border px-3 py-1.5 text-xs transition ${
-                                selected ? 'border-accent/40 bg-accent/10 text-accent' : 'border-white/10 bg-white/[0.03] text-muted-foreground'
+                              className={`w-full text-left rounded-lg border p-3 transition ${
+                                selected ? 'border-accent/40 bg-accent/10' : 'border-white/10 bg-white/[0.03]'
                               }`}
-                              title={skill.description}
                             >
-                              {skill.name}
+                              <div className="flex items-center justify-between mb-1">
+                                <span className={`text-sm font-medium ${selected ? 'text-accent' : 'text-foreground'}`}>
+                                  {skill.name}
+                                </span>
+                                {selected && (
+                                  <Sparkles className="size-3.5 text-accent" />
+                                )}
+                              </div>
+                              <p className="text-xs text-muted-foreground line-clamp-2">
+                                {skill.description}
+                              </p>
                             </button>
                           )
                         })}
                       </div>
+
+                      {filteredSkills.length === 0 && (
+                        <p className="text-center py-4 text-sm text-muted-foreground">
+                          No skills found matching your search
+                        </p>
+                      )}
+
                       <p className="mt-3 text-xs text-muted-foreground">
                         Enabled skills are rendered as a short capability summary in the prompt. Free-form skills guidance is no longer injected separately.
                       </p>
