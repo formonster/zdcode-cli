@@ -116,6 +116,9 @@ export const mockTasks: TaskSession[] = [
       system_chars: 3200,
       user_chars: 148,
       memory_chars: 0,
+      context_window: 64000,
+      context_usage_percent: 1820 / 64000,
+      model_key: 'volcengine/ark-code-latest',
     },
     timeline: [
       {
@@ -163,6 +166,9 @@ export const mockTasks: TaskSession[] = [
       system_chars: 1840,
       user_chars: 92,
       memory_chars: 0,
+      context_window: 64000,
+      context_usage_percent: 960 / 64000,
+      model_key: 'openai/openai-codex',
     },
     timeline: [
       {

@@ -1814,6 +1814,33 @@ def get_task(task_id: str) -> dict[str, Any]:
     return task
 
 
+def context_summary_payload(
+    *,
+    final_system_prompt: str,
+    user_input: str,
+    compressed_context: str,
+    memory_context: str,
+    model_row: dict[str, Any],
+    history_messages: int = 0,
+) -> dict[str, Any]:
+    estimated_total_tokens = estimate_tokens(final_system_prompt + "\n" + user_input)
+    context_window = int(model_row.get("context_window") or 0)
+    usage_percent = 0.0
+    if context_window > 0:
+        usage_percent = min(estimated_total_tokens / context_window, 1.0)
+    return {
+        "history_messages": history_messages,
+        "system_chars": len(final_system_prompt),
+        "user_chars": len(user_input),
+        "compressed_chars": len(compressed_context),
+        "memory_chars": len(memory_context),
+        "estimated_total_tokens": estimated_total_tokens,
+        "context_window": context_window,
+        "context_usage_percent": usage_percent,
+        "model_key": model_row.get("model_key") or "",
+    }
+
+
 def task_session_ids(task_id: str, enabled_agent_ids: list[str]) -> list[str]:
     session_ids = [f"task:{task_id}:orchestrator"]
     session_ids.extend(f"task:{task_id}:agent:{agent_id}" for agent_id in enabled_agent_ids)
@@ -2037,7 +2064,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             payload={"tool": tool_name, **(payload or {})},
         )
 
-    def resolve_model_provider(agent_profile: dict[str, Any]) -> tuple[Any, str, bool]:
+    def resolve_model_provider(agent_profile: dict[str, Any]) -> tuple[Any, str, bool, dict[str, Any]]:
         model_key = agent_profile["default_model"] or configured_default_model()
         model_row = get_model_raw(model_key)
         provider_map = MultiProviderMap()
@@ -2079,7 +2106,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         hosted_tools_supported = model_row["provider"] in {"openai", "openai-codex"}
         set_tracing_disabled(disabled=model_row["provider"] != "openai")
         provider = MultiProvider(provider_map=provider_map, openai_use_responses=False)
-        return provider, model_key, hosted_tools_supported
+        return provider, model_key, hosted_tools_supported, model_row
 
     def retrieve_memory(agent_profile: dict[str, Any]) -> str:
         if not MEMORY_ENABLED:
@@ -2092,12 +2119,13 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             return ""
         return "\n".join([f"- {item['episode'][:180]}" for item in items])
 
-    def base_instructions(agent_profile: dict[str, Any], *, is_orchestrator: bool) -> tuple[str, dict[str, Any]]:
+    def base_instructions(agent_profile: dict[str, Any], *, is_orchestrator: bool, task_state: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
+        active_task = task_state or task
         memory_context = retrieve_memory(agent_profile)
         local_roots = allowed_roots_for(agent_profile)
         selected_skills = agent_profile.get("selected_skills", [])
         global_system_prompt = current_settings().get("global_system_prompt", "").strip()
-        compressed_context = str(task.get("compressed_context") or "").strip()
+        compressed_context = str(active_task.get("compressed_context") or "").strip()
         skill_summaries = selected_skill_summaries(selected_skills)
 
         sections: list[str] = []
@@ -2121,7 +2149,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             f"Working directory: {agent_profile['workspace_binding']}",
             "Allowed local roots: " + ", ".join(str(root) for root in local_roots),
             f"Enabled specialist agents: {', '.join(profile['name'] for profile in enabled_agents if profile['id'] != agent_profile['id']) or 'none'}",
-            f"Task source: {task.get('source_kind') or 'manual'}",
+            f"Task source: {active_task.get('source_kind') or 'manual'}",
         ]
         if is_orchestrator:
             runtime_items.append(
@@ -2163,6 +2191,64 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             "user_input": current_input,
         }
         return prompt_text, prompt_parts
+
+    def auto_compress_if_needed(
+        *,
+        agent_profile: dict[str, Any],
+        model_row: dict[str, Any],
+        task_state: dict[str, Any],
+        prompt_parts: dict[str, Any],
+        input_text: str,
+        run_id_for_log: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        summary = context_summary_payload(
+            final_system_prompt=prompt_parts["final_system_prompt"],
+            user_input=input_text,
+            compressed_context=prompt_parts["compressed_context"],
+            memory_context=prompt_parts["memory_context"],
+            model_row=model_row,
+        )
+        context_window = int(summary.get("context_window") or 0)
+        if context_window <= 0 or summary["estimated_total_tokens"] < context_window:
+            return task_state, summary, False
+        if not (task_state.get("timeline") or []):
+            return task_state, summary, False
+
+        compressed = build_compressed_context(task_state)
+        if not compressed:
+            return task_state, summary, False
+
+        next_count = int(task_state.get("compression_count") or 0) + 1
+        db.execute(
+            "UPDATE task_sessions SET compressed_context = ?, compression_count = ?, updated_at = ? WHERE id = ?",
+            (compressed, next_count, utcnow(), task_state["id"]),
+        )
+        reset_task_conversation_history(task_state)
+        log_timeline(
+            task_state["id"],
+            "context_auto_compressed",
+            "Context auto-compressed",
+            run_id=run_id_for_log,
+            agent_id=agent_profile["id"],
+            agent_name=agent_profile["name"],
+            body=compressed[:500],
+            payload={
+                "compression_count": next_count,
+                "estimated_total_tokens": summary["estimated_total_tokens"],
+                "context_window": context_window,
+            },
+        )
+        refreshed_task = get_task(task_state["id"])
+        refreshed_instructions, refreshed_prompt_parts = base_instructions(agent_profile, is_orchestrator=True, task_state=refreshed_task)
+        refreshed_prompt_parts["final_system_prompt"] = refreshed_instructions
+        refreshed_summary = context_summary_payload(
+            final_system_prompt=refreshed_prompt_parts["final_system_prompt"],
+            user_input=input_text,
+            compressed_context=refreshed_prompt_parts["compressed_context"],
+            memory_context=refreshed_prompt_parts["memory_context"],
+            model_row=model_row,
+        )
+        return refreshed_task, refreshed_summary, True
 
     class WorkspaceEditor:
         def __init__(self, root: Path, task_id: str, agent_id: str, agent_name: str, run_id: str) -> None:
@@ -2412,18 +2498,17 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
 
             child_run_id = create_run(task["id"], agent_profile["id"], agent_profile["name"], role="specialist", model=agent_profile["default_model"])
             log_timeline(task["id"], "agent_call", f"Delegated to {agent_profile['name']}", body=input, run_id=child_run_id, agent_id=agent_profile["id"], agent_name=agent_profile["name"])
-            child_provider, child_model_key, _ = resolve_model_provider(agent_profile)
+            child_provider, child_model_key, _, child_model_row = resolve_model_provider(agent_profile)
             child_instructions, child_prompt_parts = base_instructions(agent_profile, is_orchestrator=False)
             child_prompt_payload = {
                 **child_prompt_parts,
-                "context_summary": {
-                    "history_messages": 0,
-                    "system_chars": len(child_prompt_parts["final_system_prompt"]),
-                    "user_chars": len(input),
-                    "compressed_chars": len(child_prompt_parts["compressed_context"]),
-                    "memory_chars": len(child_prompt_parts["memory_context"]),
-                    "estimated_total_tokens": estimate_tokens(child_prompt_parts["final_system_prompt"] + "\n" + input),
-                },
+                "context_summary": context_summary_payload(
+                    final_system_prompt=child_prompt_parts["final_system_prompt"],
+                    user_input=input,
+                    compressed_context=child_prompt_parts["compressed_context"],
+                    memory_context=child_prompt_parts["memory_context"],
+                    model_row=child_model_row,
+                ),
             }
             log_timeline(
                 task["id"],
@@ -2454,11 +2539,21 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         invoke_specialist.description = agent_profile["description"] or f"Specialist agent {agent_profile['name']}"
         return invoke_specialist
 
-    orchestrator_provider, orchestrator_model_key, hosted_tools_supported = resolve_model_provider(entry_agent)
+    orchestrator_provider, orchestrator_model_key, hosted_tools_supported, orchestrator_model_row = resolve_model_provider(entry_agent)
     tools = build_host_tools(entry_agent, run_id, hosted_tools_supported=hosted_tools_supported)
     specialist_tools = [child_tool_for(profile) for profile in enabled_agents if profile["id"] != entry_agent["id"]]
     participating_agents.extend([profile["name"] for profile in enabled_agents if profile["id"] != entry_agent["id"]])
     orchestrator_instructions, prompt_parts = base_instructions(entry_agent, is_orchestrator=True)
+    task, _, auto_compressed = auto_compress_if_needed(
+        agent_profile=entry_agent,
+        model_row=orchestrator_model_row,
+        task_state=task,
+        prompt_parts=prompt_parts,
+        input_text=current_input,
+        run_id_for_log=run_id,
+    )
+    if auto_compressed:
+        orchestrator_instructions, prompt_parts = base_instructions(entry_agent, is_orchestrator=True, task_state=task)
     orchestrator = Agent(
         name=entry_agent["name"],
         model=orchestrator_model_key,
@@ -2468,14 +2563,13 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
     )
     prompt_payload = {
         **prompt_parts,
-        "context_summary": {
-            "history_messages": 0,
-            "system_chars": len(prompt_parts["final_system_prompt"]),
-            "user_chars": len(current_input),
-            "compressed_chars": len(prompt_parts["compressed_context"]),
-            "memory_chars": len(prompt_parts["memory_context"]),
-            "estimated_total_tokens": estimate_tokens(prompt_parts["final_system_prompt"] + "\n" + current_input),
-        },
+        "context_summary": context_summary_payload(
+            final_system_prompt=prompt_parts["final_system_prompt"],
+            user_input=current_input,
+            compressed_context=prompt_parts["compressed_context"],
+            memory_context=prompt_parts["memory_context"],
+            model_row=orchestrator_model_row,
+        ),
     }
     return orchestrator, orchestrator_session, participating_agents, RunConfig(model_provider=orchestrator_provider), prompt_payload
 

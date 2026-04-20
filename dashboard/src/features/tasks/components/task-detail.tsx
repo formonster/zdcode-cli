@@ -8,7 +8,6 @@ import {
   ChevronDown,
   Circle,
   FolderTree,
-  Gauge,
   Scissors,
   Square,
   TerminalSquare,
@@ -112,7 +111,118 @@ function changeVariant(operation: TaskFileChange['operation']) {
   return 'default'
 }
 
+function ContextUsageRing({
+  estimatedTokens,
+  contextWindow,
+  usagePercent,
+}: {
+  estimatedTokens: number
+  contextWindow: number
+  usagePercent: number
+}) {
+  const size = 26
+  const stroke = 2.5
+  const radius = (size - stroke) / 2
+  const circumference = 2 * Math.PI * radius
+  const progress = Math.max(0, Math.min(usagePercent, 1))
+  const dashOffset = circumference * (1 - progress)
+  const ringClass =
+    progress >= 0.95 ? 'text-rose-400' : progress >= 0.8 ? 'text-amber-400' : 'text-emerald-400'
+
+  return (
+    <div className="group relative">
+      <div className="flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/[0.03]">
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={stroke}
+            className="text-white/8"
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={contextWindow > 0 ? dashOffset : circumference}
+            className={ringClass}
+          />
+        </svg>
+      </div>
+      <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 hidden w-max -translate-x-1/2 rounded-xl border border-white/8 bg-black/90 px-3 py-2 text-[11px] text-slate-200 shadow-2xl group-hover:block">
+        <div className="font-mono uppercase tracking-[0.18em] text-muted-foreground">Context</div>
+        <div className="mt-1">{estimatedTokens} tokens</div>
+        <div>{contextWindow > 0 ? `${(progress * 100).toFixed(1)}% of ${contextWindow}` : 'Window unknown'}</div>
+      </div>
+    </div>
+  )
+}
+
+function PromptSnapshotCard({ event, compact = false }: { event: TimelineEvent; compact?: boolean }) {
+  const payload = event.payload ?? {}
+  const finalSystemPrompt = typeof payload.final_system_prompt === 'string' ? payload.final_system_prompt : ''
+  const userInput = typeof payload.user_input === 'string' ? payload.user_input : ''
+  const contextSummary = payload.context_summary && typeof payload.context_summary === 'object' ? payload.context_summary : null
+  const estimatedTokens =
+    contextSummary && 'estimated_total_tokens' in contextSummary ? Number(contextSummary.estimated_total_tokens ?? 0) : 0
+  const contextWindow =
+    contextSummary && 'context_window' in contextSummary ? Number(contextSummary.context_window ?? 0) : 0
+  const usagePercent =
+    contextSummary && 'context_usage_percent' in contextSummary ? Number(contextSummary.context_usage_percent ?? 0) : 0
+
+  return (
+    <details className={`group rounded-[18px] border border-emerald-400/20 bg-emerald-400/6 ${compact ? 'p-0' : 'p-0'}`}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 marker:hidden">
+        <div className="min-w-0">
+          <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">{event.event_type}</p>
+          <h4 className="mt-1 truncate text-[13px] font-medium text-foreground">{event.title}</h4>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            {estimatedTokens > 0 ? <span>{estimatedTokens} tokens</span> : null}
+            {contextWindow > 0 ? <span>{`${(usagePercent * 100).toFixed(1)}% of ${contextWindow}`}</span> : null}
+            {typeof payload.model_key === 'string' && payload.model_key ? <span className="truncate">{payload.model_key}</span> : null}
+          </div>
+        </div>
+        <ChevronDown className="size-4 shrink-0 transition-transform duration-200 group-open:rotate-180" />
+      </summary>
+      <div className="space-y-3 border-t border-white/8 px-3 pb-3 pt-3">
+        {event.body ? (
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl bg-black/20 p-3 font-mono text-[11px] leading-5 text-slate-200">
+            {event.body}
+          </pre>
+        ) : null}
+        {userInput ? (
+          <div>
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">User Input</p>
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl bg-black/20 p-3 font-mono text-[11px] leading-5 text-slate-200">
+              {userInput}
+            </pre>
+          </div>
+        ) : null}
+        {finalSystemPrompt ? (
+          <div>
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Final System Prompt</p>
+            <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-black/20 p-3 font-mono text-[11px] leading-5 text-slate-200">
+              {finalSystemPrompt}
+            </pre>
+          </div>
+        ) : null}
+      </div>
+    </details>
+  )
+}
+
 function TimelineEventCard({ event, index, compact = false }: { event: TimelineEvent; index: number; compact?: boolean }) {
+  if (event.event_type === 'prompt_snapshot') {
+    return <PromptSnapshotCard event={event} compact={compact} />
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: compact ? 0 : 8 }}
@@ -201,6 +311,9 @@ export function TaskDetail({ task }: Props) {
   const { containerRef, handleScroll } = useAutoScroll(timelineLength)
 
   const timelineRows = useMemo(() => buildTimelineRows(task?.timeline ?? []), [task?.timeline])
+  const estimatedTokens = task?.context_summary?.estimated_total_tokens ?? 0
+  const contextWindow = task?.context_summary?.context_window ?? 0
+  const usagePercent = Math.max(0, Math.min(task?.context_summary?.context_usage_percent ?? 0, 1))
 
   const messageMutation = useMutation({
     mutationFn: async () => {
@@ -331,10 +444,7 @@ export function TaskDetail({ task }: Props) {
         />
         <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5">
-              <Gauge className="size-3.5" />
-              <span>{task.context_summary?.estimated_total_tokens ?? 0}</span>
-            </div>
+            <ContextUsageRing estimatedTokens={estimatedTokens} contextWindow={contextWindow} usagePercent={usagePercent} />
             <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5">
               <Scissors className="size-3.5" />
               <span>{task.compression_count ?? 0}</span>
@@ -347,6 +457,12 @@ export function TaskDetail({ task }: Props) {
               <Bot className="size-3.5" />
               <span className="max-w-[180px] truncate">{task.entry_agent_name}</span>
             </div>
+            {task.context_summary?.model_key ? (
+              <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5">
+                <Bot className="size-3.5" />
+                <span className="max-w-[220px] truncate">{task.context_summary.model_key}</span>
+              </div>
+            ) : null}
             <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-2 py-1.5">
               <TerminalSquare className="size-3.5" />
               <div className="flex -space-x-2">

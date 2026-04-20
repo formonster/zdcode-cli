@@ -114,6 +114,9 @@ export type TaskSession = {
     user_chars?: number
     compressed_chars?: number
     memory_chars?: number
+    context_window?: number
+    context_usage_percent?: number
+    model_key?: string
   }
   compressed_context?: string
   compression_count?: number
