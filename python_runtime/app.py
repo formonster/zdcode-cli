@@ -908,6 +908,37 @@ def normalize_task(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return row
 
 
+def collect_task_file_changes(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    changes_by_path: dict[str, dict[str, Any]] = {}
+    for event in timeline:
+        if event.get("event_type") not in {"tool_call", "tool_result"}:
+            continue
+        payload = event.get("payload") or {}
+        tool_name = payload.get("tool") or ""
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            continue
+        operation = "updated"
+        if tool_name == "apply_patch":
+            raw_type = str(payload.get("type") or "").strip().lower()
+            if raw_type == "add":
+                operation = "created"
+            elif raw_type == "delete":
+                operation = "deleted"
+            else:
+                operation = "updated"
+        elif tool_name == "write_local_file":
+            operation = "updated"
+        else:
+            continue
+        changes_by_path[path] = {
+            "path": path,
+            "operation": operation,
+            "tool": tool_name,
+        }
+    return list(changes_by_path.values())
+
+
 def normalize_run(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
@@ -1144,6 +1175,27 @@ def patch_agent(agent_id: str, payload: AgentPatchPayload) -> dict[str, Any]:
     return get_agent(agent_id)
 
 
+def delete_agent(agent_id: str) -> dict[str, Any]:
+    agent = get_agent(agent_id)
+    active_task = db.fetchone(
+        """
+        SELECT id, status FROM task_sessions
+        WHERE (entry_agent_id = ? OR enabled_agent_ids LIKE ?)
+          AND status IN ('queued', 'running', 'waiting_approval')
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (agent_id, f'%{agent_id}%'),
+    )
+    if active_task:
+        raise HTTPException(status_code=409, detail=f"Agent is still referenced by active task {active_task['id']}.")
+
+    db.execute("DELETE FROM agent_channel_bindings WHERE agent_id = ?", (agent_id,))
+    db.execute("DELETE FROM channel_conversations WHERE current_agent_id = ?", (agent_id,))
+    db.execute("DELETE FROM agent_profiles WHERE id = ?", (agent_id,))
+    return {"ok": True, "agent_id": agent_id, "name": agent["name"]}
+
+
 def log_timeline(
     task_session_id: str,
     event_type: str,
@@ -1263,6 +1315,20 @@ def create_task(payload: TaskCreatePayload) -> dict[str, Any]:
     )
     log_timeline(task_id, "task_created", f"Task created: {payload.title}", body=payload.prompt)
     return get_task(task_id)
+
+
+def delete_task(task_id: str) -> dict[str, Any]:
+    task = get_task(task_id)
+    if task["status"] in {"queued", "running", "waiting_approval"}:
+        raise HTTPException(status_code=409, detail="Active tasks must be terminated before deletion.")
+
+    db.execute("DELETE FROM approvals WHERE task_session_id = ?", (task_id,))
+    db.execute("DELETE FROM timeline_events WHERE task_session_id = ?", (task_id,))
+    db.execute("DELETE FROM agent_runs WHERE task_session_id = ?", (task_id,))
+    db.execute("DELETE FROM channel_messages WHERE task_session_id = ?", (task_id,))
+    db.execute("UPDATE channel_conversations SET current_task_id = NULL, updated_at = ? WHERE current_task_id = ?", (utcnow(), task_id))
+    db.execute("DELETE FROM task_sessions WHERE id = ?", (task_id,))
+    return {"ok": True, "task_id": task_id, "title": task["title"]}
 
 
 def default_entry_agent() -> dict[str, Any]:
@@ -1742,6 +1808,7 @@ def get_task(task_id: str) -> dict[str, Any]:
     task["runs"] = runs
     task["approvals"] = approvals
     task["timeline"] = timeline
+    task["file_changes"] = collect_task_file_changes(timeline)
     latest_run = runs[-1] if runs else None
     task["context_summary"] = (latest_run or {}).get("metadata", {}).get("context_summary", {})
     return task
@@ -2669,6 +2736,11 @@ async def agents_update(agent_id: str, payload: AgentPatchPayload) -> dict[str, 
     return patch_agent(agent_id, payload)
 
 
+@app.delete("/agents/{agent_id}")
+async def agents_delete(agent_id: str) -> dict[str, Any]:
+    return delete_agent(agent_id)
+
+
 @app.get("/tasks")
 async def tasks_index() -> list[dict[str, Any]]:
     return [normalize_task(item) for item in db.fetchall("SELECT * FROM task_sessions ORDER BY created_at DESC")]
@@ -2738,6 +2810,11 @@ async def tasks_compress_context(task_id: str) -> dict[str, Any]:
     reset_task_conversation_history(task)
     log_timeline(task_id, "context_compressed", "Context compressed", body=compressed[:500], payload={"compression_count": int(task.get("compression_count") or 0) + 1})
     return get_task(task_id)
+
+
+@app.delete("/tasks/{task_id}")
+async def tasks_delete(task_id: str) -> dict[str, Any]:
+    return delete_task(task_id)
 
 
 def parse_channel_new_task(text: str) -> tuple[bool, str]:

@@ -136,6 +136,12 @@ export function compressTaskContext(taskId: string) {
   })
 }
 
+export function deleteTask(taskId: string) {
+  return runtimeFetch<{ ok: boolean; task_id: string; title: string }>(`/tasks/${taskId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function createAgent(payload: Partial<AgentProfile> & Pick<AgentProfile, 'name' | 'default_model' | 'workspace_binding'>) {
   return runtimeFetch<AgentProfile>('/agents', {
     method: 'POST',
@@ -170,5 +176,11 @@ export function updateAgent(agentId: string, payload: Partial<AgentProfile>) {
   return runtimeFetch<AgentProfile>(`/agents/${agentId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  })
+}
+
+export function deleteAgent(agentId: string) {
+  return runtimeFetch<{ ok: boolean; agent_id: string; name: string }>(`/agents/${agentId}`, {
+    method: 'DELETE',
   })
 }

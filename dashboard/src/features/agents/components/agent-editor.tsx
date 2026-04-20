@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from '@tanstack/react-form'
-import { Bot, ImagePlus, Sparkles } from 'lucide-react'
+import { Bot, ImagePlus, Sparkles, Trash2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Textarea } from '@/components/ui/textarea'
-import { createAgent, updateAgent } from '@/features/tasks/api/dashboard-api'
+import { createAgent, deleteAgent, updateAgent } from '@/features/tasks/api/dashboard-api'
+import { useDashboardStore } from '@/features/dashboard/store/dashboard-store'
 import type { AgentProfile, ModelRecord, SkillRecord } from '@/shared/types/runtime'
 
 type Props = {
@@ -22,6 +23,7 @@ type Props = {
 
 export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
   const queryClient = useQueryClient()
+  const setSelection = useDashboardStore((state) => state.setSelection)
   const mutation = useMutation({
     mutationFn: async (value: AgentProfile) => {
       if (mode === 'edit' && agent) {
@@ -34,6 +36,14 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
         queryClient.invalidateQueries({ queryKey: ['agents'] }),
         queryClient.invalidateQueries({ queryKey: ['tasks'] }),
       ])
+      onDone?.()
+    },
+  })
+  const deleteMutation = useMutation({
+    mutationFn: deleteAgent,
+    onSuccess: async () => {
+      setSelection({ type: 'new-task' })
+      await queryClient.invalidateQueries({ queryKey: ['agents'] })
       onDone?.()
     },
   })
@@ -304,6 +314,17 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
             <div className="mt-3 flex items-center justify-between gap-3">
               <Badge variant={form.state.values.enabled ? 'success' : 'danger'}>{form.state.values.enabled ? 'enabled' : 'disabled'}</Badge>
               <div className="flex gap-2">
+                {mode === 'edit' && agent ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-10 px-4 text-rose-300 hover:bg-rose-500/10 hover:text-rose-200"
+                    onClick={() => void deleteMutation.mutateAsync(agent.id)}
+                  >
+                    <Trash2 className="mr-2 size-4" />
+                    Delete
+                  </Button>
+                ) : null}
                 {onDone ? (
                   <Button type="button" variant="ghost" className="h-10 px-4" onClick={onDone}>
                     Cancel

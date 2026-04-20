@@ -91,6 +91,12 @@ export type TimelineEvent = {
   created_at?: string
 }
 
+export type TaskFileChange = {
+  path: string
+  operation: 'created' | 'updated' | 'deleted'
+  tool?: string
+}
+
 export type TaskSession = {
   id: string
   title: string
@@ -112,4 +118,5 @@ export type TaskSession = {
   compressed_context?: string
   compression_count?: number
   timeline?: TimelineEvent[]
+  file_changes?: TaskFileChange[]
 }

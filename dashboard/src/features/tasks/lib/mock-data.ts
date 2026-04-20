@@ -134,6 +134,18 @@ export const mockTasks: TaskSession[] = [
         body: '$RECYCLE.BIN\nOpenClaw橙皮书-从入门到精通.pdf\nOld_Homebrew',
       },
     ],
+    file_changes: [
+      {
+        path: '/Users/ding/zdcode/zdcode-cli/python_runtime/app.py',
+        operation: 'updated',
+        tool: 'apply_patch',
+      },
+      {
+        path: '/Users/ding/zdcode/zdcode-cli/dashboard/src/features/tasks/components/task-detail.tsx',
+        operation: 'updated',
+        tool: 'write_local_file',
+      },
+    ],
   },
   {
     id: 'task-2',
