@@ -5,8 +5,10 @@ import base64
 import copy
 import importlib.util
 import json
+import mimetypes
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import threading
@@ -988,6 +990,97 @@ def normalize_channel_outbox(row: dict[str, Any] | None) -> dict[str, Any] | Non
     return row
 
 
+def extract_message_text_parts(value: Any) -> list[str]:
+    parts: list[str] = []
+
+    def visit(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, str):
+            text = node.strip()
+            if text:
+                parts.append(text)
+            return
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if isinstance(node, dict):
+            message_type = str(node.get("type") or "").strip().lower()
+            if message_type == "message":
+                visit(node.get("content"))
+                return
+            if message_type == "function_call":
+                name = str(node.get("name") or "").strip()
+                arguments = str(node.get("arguments") or "").strip()
+                if name:
+                    parts.append(name)
+                if arguments:
+                    parts.append(arguments)
+                return
+            if message_type == "function_call_output":
+                visit(node.get("output"))
+                return
+            for key, item in node.items():
+                if key in {"id", "status", "provider_data", "annotations", "logprobs", "call_id"}:
+                    continue
+                if key in {"text", "output", "arguments", "content", "input"}:
+                    visit(item)
+            return
+
+    visit(value)
+    return parts
+
+
+def session_history_summary(session_id: str, session_db_path: Path) -> dict[str, int]:
+    if not session_id or not session_db_path.exists():
+        return {
+            "history_messages": 0,
+            "history_chars": 0,
+            "history_tokens": 0,
+        }
+
+    with sqlite3.connect(str(session_db_path)) as conn:
+        rows = conn.execute(
+            "SELECT message_data FROM agent_messages WHERE session_id = ? ORDER BY id ASC",
+            (session_id,),
+        ).fetchall()
+
+    parts: list[str] = []
+    for (message_data,) in rows:
+        payload = json_loads(message_data, {})
+        parts.extend(extract_message_text_parts(payload))
+
+    history_text = "\n".join(part for part in parts if part)
+    return {
+        "history_messages": len(rows),
+        "history_chars": len(history_text),
+        "history_tokens": estimate_tokens(history_text) if history_text else 0,
+    }
+
+
+def build_turn_input_with_sticky_system_prompt(
+    *,
+    system_prompt: str,
+    user_input: str,
+    session_id: str,
+    session_db_path: Path,
+) -> tuple[str | list[dict[str, Any]], str, dict[str, int]]:
+    history_summary = session_history_summary(session_id, session_db_path)
+    prompt_text = trim_prompt_block(system_prompt)
+    should_send_system = history_summary["history_messages"] == 0 and bool(prompt_text)
+    if should_send_system:
+        return (
+            [
+                {"role": "system", "content": prompt_text},
+                {"role": "user", "content": user_input},
+            ],
+            prompt_text,
+            history_summary,
+        )
+    return user_input, "", history_summary
+
+
 def channels_store_default() -> dict[str, Any]:
     return {
         "version": 1,
@@ -1876,15 +1969,23 @@ def context_summary_payload(
     compressed_context: str,
     memory_context: str,
     model_row: dict[str, Any],
-    history_messages: int = 0,
+    session_id: str = "",
+    session_db_path: Path | None = None,
 ) -> dict[str, Any]:
-    estimated_total_tokens = estimate_tokens(final_system_prompt + "\n" + user_input)
+    history_summary = session_history_summary(session_id, session_db_path) if session_id and session_db_path else {
+        "history_messages": 0,
+        "history_chars": 0,
+        "history_tokens": 0,
+    }
+    estimated_total_tokens = estimate_tokens(final_system_prompt + "\n" + user_input) + int(history_summary["history_tokens"])
     context_window = int(model_row.get("context_window") or 0)
     usage_percent = 0.0
     if context_window > 0:
         usage_percent = min(estimated_total_tokens / context_window, 1.0)
     return {
-        "history_messages": history_messages,
+        "history_messages": int(history_summary["history_messages"]),
+        "history_chars": int(history_summary["history_chars"]),
+        "history_tokens": int(history_summary["history_tokens"]),
         "system_chars": len(final_system_prompt),
         "user_chars": len(user_input),
         "compressed_chars": len(compressed_context),
@@ -2083,7 +2184,8 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
     enabled_agents = [get_agent(agent_id) for agent_id in task["enabled_agent_ids"]]
     participating_agents = [entry_agent["name"]]
     session_db_path = DB_PATH.parent / "agent-conversations.sqlite"
-    orchestrator_session = SQLiteSession(f"task:{task['id']}:orchestrator", db_path=session_db_path)
+    orchestrator_session_id = f"task:{task['id']}:orchestrator"
+    orchestrator_session = SQLiteSession(orchestrator_session_id, db_path=session_db_path)
 
     def allowed_roots_for(agent_profile: dict[str, Any]) -> list[Path]:
         roots = [Path(agent_profile["workspace_binding"]).expanduser().resolve(), Path.home().resolve()]
@@ -2277,13 +2379,22 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         prompt_parts: dict[str, Any],
         input_text: str,
         run_id_for_log: str,
+        session_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        _turn_input, system_prompt_for_turn, _history_summary = build_turn_input_with_sticky_system_prompt(
+            system_prompt=prompt_parts["final_system_prompt"],
+            user_input=input_text,
+            session_id=session_id,
+            session_db_path=session_db_path,
+        )
         summary = context_summary_payload(
-            final_system_prompt=prompt_parts["final_system_prompt"],
+            final_system_prompt=system_prompt_for_turn,
             user_input=input_text,
             compressed_context=prompt_parts["compressed_context"],
             memory_context=prompt_parts["memory_context"],
             model_row=model_row,
+            session_id=session_id,
+            session_db_path=session_db_path,
         )
         context_window = int(summary.get("context_window") or 0)
         if context_window <= 0 or summary["estimated_total_tokens"] < context_window:
@@ -2318,12 +2429,20 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         refreshed_task = get_task(task_state["id"])
         refreshed_instructions, refreshed_prompt_parts = base_instructions(agent_profile, is_orchestrator=True, task_state=refreshed_task)
         refreshed_prompt_parts["final_system_prompt"] = refreshed_instructions
+        _refreshed_turn_input, refreshed_system_prompt_for_turn, _refreshed_history = build_turn_input_with_sticky_system_prompt(
+            system_prompt=refreshed_prompt_parts["final_system_prompt"],
+            user_input=input_text,
+            session_id=session_id,
+            session_db_path=session_db_path,
+        )
         refreshed_summary = context_summary_payload(
-            final_system_prompt=refreshed_prompt_parts["final_system_prompt"],
+            final_system_prompt=refreshed_system_prompt_for_turn,
             user_input=input_text,
             compressed_context=refreshed_prompt_parts["compressed_context"],
             memory_context=refreshed_prompt_parts["memory_context"],
             model_row=model_row,
+            session_id=session_id,
+            session_db_path=session_db_path,
         )
         return refreshed_task, refreshed_summary, True
 
@@ -2502,16 +2621,114 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
 
             tools.append(ApplyPatchTool(editor=editor, needs_approval=patch_needs_approval))
 
-        if hosted_tools_supported and tool_profile.get("browser", False) and import_available("playwright"):
-            async def create_computer(*, run_context: Any) -> LocalPlaywrightComputer:
-                _ = run_context
-                return await LocalPlaywrightComputer(task["id"], agent_profile["id"], agent_profile["name"], run_id).open()
+        if tool_profile.get("browser", False):
+            browser_session = f"task-{task['id'][:8]}-{run_id[:8]}"
 
-            async def dispose_computer(*, run_context: Any, computer: LocalPlaywrightComputer) -> None:
-                _ = run_context
-                await computer.close()
+            def run_agent_browser_cli(args: list[str], *, parse_json: bool = False) -> tuple[str, Any | None]:
+                command = ["agent-browser", "--session", browser_session, *args]
+                completed = subprocess.run(
+                    command,
+                    cwd=str(workspace),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                stdout = completed.stdout.strip()
+                stderr = completed.stderr.strip()
+                if completed.returncode != 0:
+                    raise RuntimeError(stderr or stdout or f"agent-browser exited with {completed.returncode}")
+                payload = None
+                if parse_json and stdout:
+                    payload = json.loads(stdout)
+                    if isinstance(payload, dict) and payload.get("success") is False:
+                        raise RuntimeError(str(payload.get("error") or "agent-browser command failed"))
+                return stdout or stderr or "(no output)", payload
 
-            tools.append(ComputerTool(computer=ComputerProvider(create=create_computer, dispose=dispose_computer)))
+            @function_tool
+            async def agent_browser(command: str) -> str:
+                """Run an existing agent-browser CLI command to navigate or inspect a web page. Pass only the subcommand and arguments, for example: `open https://example.com`, `snapshot -i`, `click @e1`, `fill @e2 \"hello\"`, `get title`, `wait 1000`."""
+
+                trimmed = command.strip()
+                if not trimmed:
+                    raise RuntimeError("agent-browser command is required.")
+
+                args = shlex.split(trimmed)
+                command_name = args[0]
+                wants_json = command_name in {"open", "get", "snapshot", "screenshot", "eval", "find", "console", "errors"} and "--json" not in args
+                final_args = [*args, "--json"] if wants_json else args
+                log_timeline(task["id"], "tool_call", f"{agent_profile['name']} agent-browser", body=trimmed, run_id=run_id, agent_id=agent_profile["id"], agent_name=agent_profile["name"], payload={"tool": "agent-browser", "command": trimmed, "session": browser_session})
+                raw_output, parsed = run_agent_browser_cli(final_args, parse_json=wants_json or "--json" in args)
+
+                payload: dict[str, Any] = {"command": trimmed, "session": browser_session}
+                body = raw_output
+                if isinstance(parsed, dict):
+                    data = parsed.get("data")
+                    if command_name == "open" and isinstance(data, dict):
+                        title = str(data.get("title") or "(untitled)")
+                        url = str(data.get("url") or "")
+                        body = f"Opened {url or '(unknown url)'}\nTitle: {title}"
+                        payload.update({"page_title": title, "page_url": url})
+                    elif command_name == "get" and isinstance(data, dict):
+                        body = json_dumps(data)
+                        payload["result"] = data
+                    elif command_name == "snapshot" and data is not None:
+                        body = json_dumps(data)
+                        payload["result"] = data
+
+                log_tool_result(task["id"], run_id, agent_profile, "agent-browser", f"{agent_profile['name']} agent-browser", body, payload)
+                return body
+
+            @function_tool
+            async def agent_browser_screenshot(label: str = "Browser screenshot", full_page: bool = False, annotate: bool = False) -> str:
+                """Capture a screenshot using the existing agent-browser CLI and attach it to the timeline."""
+
+                args = ["screenshot"]
+                if full_page:
+                    args.append("--full")
+                if annotate:
+                    args.append("--annotate")
+                args.append("--json")
+                log_timeline(task["id"], "tool_call", f"{agent_profile['name']} agent-browser screenshot", body=label, run_id=run_id, agent_id=agent_profile["id"], agent_name=agent_profile["name"], payload={"tool": "agent-browser", "action": "screenshot", "label": label, "full_page": full_page, "annotate": annotate, "session": browser_session})
+                _raw_output, parsed = run_agent_browser_cli(args, parse_json=True)
+                data = parsed.get("data") if isinstance(parsed, dict) else None
+                image_path = Path(str((data or {}).get("path") or "")).expanduser()
+                if not image_path.exists():
+                    raise RuntimeError("agent-browser screenshot did not produce a file.")
+                image_bytes = image_path.read_bytes()
+                mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
+                image_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+                body = f"{label}\nSaved to: {image_path}"
+                log_tool_result(
+                    task["id"],
+                    run_id,
+                    agent_profile,
+                    "agent-browser",
+                    f"{agent_profile['name']} agent-browser screenshot",
+                    body,
+                    {
+                        "action": "screenshot",
+                        "label": label,
+                        "full_page": full_page,
+                        "annotate": annotate,
+                        "session": browser_session,
+                        "image_path": str(image_path),
+                        "image_url": image_url,
+                    },
+                )
+                return body
+
+            tools.extend([agent_browser, agent_browser_screenshot])
+
+            if hosted_tools_supported and import_available("playwright"):
+                async def create_computer(*, run_context: Any) -> LocalPlaywrightComputer:
+                    _ = run_context
+                    return await LocalPlaywrightComputer(task["id"], agent_profile["id"], agent_profile["name"], run_id).open()
+
+                async def dispose_computer(*, run_context: Any, computer: LocalPlaywrightComputer) -> None:
+                    _ = run_context
+                    await computer.close()
+
+                tools.append(ComputerTool(computer=ComputerProvider(create=create_computer, dispose=dispose_computer)))
 
         if not hosted_tools_supported:
             @function_tool
@@ -2598,21 +2815,33 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             log_timeline(task["id"], "agent_call", f"Delegated to {agent_profile['name']}", body=input, run_id=child_run_id, agent_id=agent_profile["id"], agent_name=agent_profile["name"])
             child_provider, child_model_key, _, child_model_row = resolve_model_provider(agent_profile)
             child_instructions, child_prompt_parts = base_instructions(agent_profile, is_orchestrator=False)
+            child_session_id = f"task:{task['id']}:agent:{agent_profile['id']}"
+            child_session = SQLiteSession(child_session_id, db_path=session_db_path)
+            child_runner_input, child_system_prompt_for_turn, child_history_summary = build_turn_input_with_sticky_system_prompt(
+                system_prompt=child_prompt_parts["final_system_prompt"],
+                user_input=input,
+                session_id=child_session_id,
+                session_db_path=session_db_path,
+            )
             child_prompt_payload = {
                 **child_prompt_parts,
                 "context_summary": context_summary_payload(
-                    final_system_prompt=child_prompt_parts["final_system_prompt"],
+                    final_system_prompt=child_system_prompt_for_turn,
                     user_input=input,
                     compressed_context=child_prompt_parts["compressed_context"],
                     memory_context=child_prompt_parts["memory_context"],
                     model_row=child_model_row,
+                    session_id=child_session_id,
+                    session_db_path=session_db_path,
                 ),
+                "model_input": child_runner_input,
+                "input_transport": "items" if isinstance(child_runner_input, list) else "text",
             }
             log_timeline(
                 task["id"],
                 "prompt_snapshot",
                 f"Prompt sent to {agent_profile['name']}",
-                body="System prompt, user input, and memory snapshot.",
+                body="Exact model payload for this turn.",
                 run_id=child_run_id,
                 agent_id=agent_profile["id"],
                 agent_name=agent_profile["name"],
@@ -2621,12 +2850,11 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             child_agent = Agent(
                 name=agent_profile["name"],
                 model=child_model_key,
-                instructions=child_instructions,
+                instructions="",
                 tools=[],
                 model_settings=ModelSettings(parallel_tool_calls=False),
             )
-            child_session = SQLiteSession(f"task:{task['id']}:agent:{agent_profile['id']}", db_path=session_db_path)
-            result = await Runner.run(child_agent, input, session=child_session, run_config=RunConfig(model_provider=child_provider))
+            result = await Runner.run(child_agent, child_runner_input, session=child_session, run_config=RunConfig(model_provider=child_provider))
             complete_run(child_run_id, "completed", str(result.final_output))
             log_tool_result(task["id"], run_id, agent_profile, "specialist", f"{agent_profile['name']} specialist result", str(result.final_output), {"delegated_by_run_id": run_id})
             if MEMORY_ENABLED:
@@ -2649,27 +2877,39 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         prompt_parts=prompt_parts,
         input_text=current_input,
         run_id_for_log=run_id,
+        session_id=f"task:{task['id']}:orchestrator",
     )
     if auto_compressed:
         orchestrator_instructions, prompt_parts = base_instructions(entry_agent, is_orchestrator=True, task_state=task)
+    orchestrator_runner_input, orchestrator_system_prompt_for_turn, orchestrator_history_summary = build_turn_input_with_sticky_system_prompt(
+        system_prompt=prompt_parts["final_system_prompt"],
+        user_input=current_input,
+        session_id=orchestrator_session_id,
+        session_db_path=session_db_path,
+    )
     orchestrator = Agent(
         name=entry_agent["name"],
         model=orchestrator_model_key,
-        instructions=orchestrator_instructions,
+        instructions="",
         tools=[*tools, *specialist_tools],
         model_settings=ModelSettings(parallel_tool_calls=False),
     )
     prompt_payload = {
         **prompt_parts,
         "context_summary": context_summary_payload(
-            final_system_prompt=prompt_parts["final_system_prompt"],
+            final_system_prompt=orchestrator_system_prompt_for_turn,
             user_input=current_input,
             compressed_context=prompt_parts["compressed_context"],
             memory_context=prompt_parts["memory_context"],
             model_row=orchestrator_model_row,
+            session_id=orchestrator_session_id,
+            session_db_path=session_db_path,
         ),
+        "model_input": orchestrator_runner_input,
+        "input_transport": "items" if isinstance(orchestrator_runner_input, list) else "text",
     }
-    return orchestrator, orchestrator_session, participating_agents, RunConfig(model_provider=orchestrator_provider), prompt_payload
+    prompt_payload["final_system_prompt"] = orchestrator_system_prompt_for_turn
+    return orchestrator, orchestrator_session, participating_agents, RunConfig(model_provider=orchestrator_provider), prompt_payload, orchestrator_runner_input, orchestrator_history_summary
 
 
 async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, input_text: str | None = None) -> None:
@@ -2720,7 +2960,7 @@ async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, 
         else:
             entry_agent = get_agent(task["entry_agent_id"])
             run_id = create_run(task["id"], entry_agent["id"], entry_agent["name"], role="orchestrator", model=entry_agent["default_model"])
-            orchestrator, session, participating_agents, run_config, prompt_payload = await build_agents_runtime(task, run_id, current_input)
+            orchestrator, session, participating_agents, run_config, prompt_payload, runner_input, history_summary = await build_agents_runtime(task, run_id, current_input)
             current_session = session
             current_starting_agent = orchestrator
             current_run_config = run_config
@@ -2733,12 +2973,12 @@ async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, 
                 run_id=run_id,
                 agent_id=task["entry_agent_id"],
                 agent_name=task["entry_agent_name"],
-                body="System prompt, user input, and memory snapshot.",
+                body="Exact model payload for this turn.",
                 payload=prompt_payload,
             )
             result = await Runner.run(
                 orchestrator,
-                current_input,
+                runner_input,
                 session=session,
                 run_config=run_config,
                 max_turns=int(task.get("max_turns") or DEFAULT_TASK_MAX_TURNS),

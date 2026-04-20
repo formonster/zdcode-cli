@@ -57,7 +57,7 @@ function summarizeToolEvents(events: TimelineEvent[]) {
       if (path) explored.add(path)
     } else if (tool === 'shell' || tool === 'run_local_command') {
       commands += event.event_type === 'tool_call' ? 1 : 0
-    } else if (tool === 'computer') {
+    } else if (tool === 'computer' || tool === 'browser' || tool === 'agent-browser') {
       browserSteps += event.event_type === 'tool_call' ? 1 : 0
     }
   }
@@ -169,6 +169,11 @@ function PromptSnapshotCard({ event, compact = false }: { event: TimelineEvent; 
   const payload = event.payload ?? {}
   const finalSystemPrompt = typeof payload.final_system_prompt === 'string' ? payload.final_system_prompt : ''
   const userInput = typeof payload.user_input === 'string' ? payload.user_input : ''
+  const inputTransport = typeof payload.input_transport === 'string' ? payload.input_transport : ''
+  const modelInput =
+    payload.model_input !== undefined
+      ? JSON.stringify(payload.model_input, null, 2)
+      : ''
   const contextSummary = payload.context_summary && typeof payload.context_summary === 'object' ? payload.context_summary : null
   const estimatedTokens =
     contextSummary && 'estimated_total_tokens' in contextSummary ? Number(contextSummary.estimated_total_tokens ?? 0) : 0
@@ -205,6 +210,16 @@ function PromptSnapshotCard({ event, compact = false }: { event: TimelineEvent; 
             </pre>
           </div>
         ) : null}
+        {modelInput ? (
+          <div>
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+              Actual Model Input{inputTransport ? ` · ${inputTransport}` : ''}
+            </p>
+            <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-black/20 p-3 font-mono text-[11px] leading-5 text-slate-200">
+              {modelInput}
+            </pre>
+          </div>
+        ) : null}
         {finalSystemPrompt ? (
           <div>
             <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Final System Prompt</p>
@@ -222,6 +237,11 @@ function TimelineEventCard({ event, index, compact = false }: { event: TimelineE
   if (event.event_type === 'prompt_snapshot') {
     return <PromptSnapshotCard event={event} compact={compact} />
   }
+
+  const payload = event.payload ?? {}
+  const imageUrl = typeof payload.image_url === 'string' ? payload.image_url : ''
+  const imagePath = typeof payload.image_path === 'string' ? payload.image_path : ''
+  const pageUrl = typeof payload.page_url === 'string' ? payload.page_url : ''
 
   return (
     <motion.div
@@ -243,6 +263,17 @@ function TimelineEventCard({ event, index, compact = false }: { event: TimelineE
         <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl bg-black/20 p-3 font-mono text-[11px] leading-5 text-slate-200">
           {event.body}
         </pre>
+      ) : null}
+      {imageUrl ? (
+        <div className="mt-3 overflow-hidden rounded-2xl border border-white/8 bg-black/20">
+          <img src={imageUrl} alt={event.title} className="block max-h-[420px] w-full object-contain" />
+          {(imagePath || pageUrl) ? (
+            <div className="border-t border-white/8 px-3 py-2 text-xs text-muted-foreground">
+              {pageUrl ? <p className="truncate">{pageUrl}</p> : null}
+              {imagePath ? <p className="truncate">{imagePath}</p> : null}
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </motion.div>
   )
