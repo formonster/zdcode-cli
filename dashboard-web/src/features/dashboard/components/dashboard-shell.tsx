@@ -1,16 +1,17 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Command, Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Command, Plus, Settings2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { AgentEditor } from '@/features/agents/components/agent-editor'
 import { AgentList } from '@/features/agents/components/agent-list'
 import { useDashboardStore } from '@/features/dashboard/store/dashboard-store'
-import { getAgent, getAgents, getHealth, getModels, getSkills, getTask, getTasks } from '@/features/tasks/api/dashboard-api'
+import { getAgent, getAgents, getHealth, getModels, getSettings, getSkills, getTask, getTasks } from '@/features/tasks/api/dashboard-api'
 import { NewTaskForm } from '@/features/tasks/components/new-task-form'
 import { TaskDetail } from '@/features/tasks/components/task-detail'
 import { TaskList } from '@/features/tasks/components/task-list'
+import { SettingsEditor } from '@/features/settings/components/settings-editor'
 
 function SectionHeader({
   title,
@@ -49,6 +50,7 @@ export function DashboardShell() {
   const tasksQuery = useQuery({ queryKey: ['tasks'], queryFn: getTasks })
   const skillsQuery = useQuery({ queryKey: ['skills'], queryFn: getSkills })
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: getModels })
+  const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: getSettings })
 
   const selectedTaskId = selection.type === 'task' ? selection.id : null
   const selectedAgentId = selection.type === 'agent' ? selection.id : null
@@ -83,8 +85,11 @@ export function DashboardShell() {
     if (selection.type === 'task') {
       return <TaskDetail task={taskDetailQuery.data} />
     }
+    if (selection.type === 'settings') {
+      return <SettingsEditor settings={settingsQuery.data} />
+    }
     return <NewTaskForm agents={agents} />
-  }, [agentDetailQuery.data, agents, models, selection, skills, taskDetailQuery.data])
+  }, [agentDetailQuery.data, agents, models, selection, settingsQuery.data, skills, taskDetailQuery.data])
 
   return (
     <div className="h-screen overflow-hidden p-3">
@@ -109,6 +114,11 @@ export function DashboardShell() {
           >
             <Plus className="mr-2 size-4" />
             New Task
+          </Button>
+
+          <Button variant="ghost" className="mb-3 h-10 justify-start rounded-[16px] px-4" onClick={() => setSelection({ type: 'settings' })}>
+            <Settings2 className="mr-2 size-4" />
+            Settings
           </Button>
 
           <ScrollArea className="min-h-0 flex-1 pr-1">

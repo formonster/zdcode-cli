@@ -1,5 +1,5 @@
 import { runtimeFetch } from '@/shared/api/runtime-client'
-import type { AgentProfile, ChannelBinding, ChannelConnection, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
+import type { AgentProfile, AppSettings, ChannelBinding, ChannelConnection, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
 
 import { mockAgents, mockChannelBindings, mockChannelConnections, mockHealth, mockModels, mockSkills, mockTasks } from '../lib/mock-data'
 
@@ -37,6 +37,17 @@ export function getSkills() {
 
 export function getModels() {
   return fallback(runtimeFetch<ModelRecord[]>('/models'), mockModels)
+}
+
+export function getSettings() {
+  return fallback<AppSettings>(runtimeFetch('/settings'), { global_system_prompt: '' })
+}
+
+export function updateSettings(payload: AppSettings) {
+  return runtimeFetch<AppSettings>('/settings', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function getChannelConnections() {
@@ -113,6 +124,18 @@ export function sendTaskMessage(taskId: string, prompt: string) {
   })
 }
 
+export function cancelTask(taskId: string) {
+  return runtimeFetch<{ ok: boolean; task_id: string; status: string }>(`/tasks/${taskId}/cancel`, {
+    method: 'POST',
+  })
+}
+
+export function compressTaskContext(taskId: string) {
+  return runtimeFetch<TaskSession>(`/tasks/${taskId}/compress-context`, {
+    method: 'POST',
+  })
+}
+
 export function createAgent(payload: Partial<AgentProfile> & Pick<AgentProfile, 'name' | 'default_model' | 'workspace_binding'>) {
   return runtimeFetch<AgentProfile>('/agents', {
     method: 'POST',
@@ -123,7 +146,10 @@ export function createAgent(payload: Partial<AgentProfile> & Pick<AgentProfile, 
       default_model: payload.default_model,
       workspace_binding: payload.workspace_binding,
       persona_prompt: payload.persona_prompt ?? '',
-      skills_prompt: payload.skills_prompt ?? '',
+      skills_prompt: '',
+      agent_identity_prompt: payload.agent_identity_prompt ?? '',
+      agent_responsibility_prompt: payload.agent_responsibility_prompt ?? '',
+      agent_non_goals_prompt: payload.agent_non_goals_prompt ?? '',
       selected_skills: payload.selected_skills ?? [],
       tool_profile: {
         shell: true,

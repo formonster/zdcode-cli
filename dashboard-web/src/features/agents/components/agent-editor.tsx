@@ -45,7 +45,10 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
       avatar_url: agent?.avatar_url ?? '',
       default_model: agent?.default_model ?? models.find((item) => item.is_default)?.model_key ?? '',
       persona_prompt: agent?.persona_prompt ?? '',
-      skills_prompt: agent?.skills_prompt ?? '',
+      skills_prompt: '',
+      agent_identity_prompt: agent?.agent_identity_prompt ?? '',
+      agent_responsibility_prompt: agent?.agent_responsibility_prompt ?? '',
+      agent_non_goals_prompt: agent?.agent_non_goals_prompt ?? '',
       selected_skills: agent?.selected_skills ?? [],
       workspace_binding: agent?.workspace_binding ?? '/Users/ding/zdcode/zdcode-cli',
       channel_config: {
@@ -72,7 +75,10 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
       avatar_url: agent?.avatar_url ?? '',
       default_model: agent?.default_model ?? models.find((item) => item.is_default)?.model_key ?? '',
       persona_prompt: agent?.persona_prompt ?? '',
-      skills_prompt: agent?.skills_prompt ?? '',
+      skills_prompt: '',
+      agent_identity_prompt: agent?.agent_identity_prompt ?? '',
+      agent_responsibility_prompt: agent?.agent_responsibility_prompt ?? '',
+      agent_non_goals_prompt: agent?.agent_non_goals_prompt ?? '',
       selected_skills: agent?.selected_skills ?? [],
       workspace_binding: agent?.workspace_binding ?? '/Users/ding/zdcode/zdcode-cli',
       channel_config: {
@@ -156,29 +162,56 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
                   children={(field) => <Input value={field.state.value} onChange={(event) => field.handleChange(event.target.value)} placeholder="Short responsibility summary" />}
                 />
 
-                <form.Field
-                  name="persona_prompt"
-                  children={(field) => (
-                    <Textarea
-                      rows={6}
-                      value={field.state.value}
-                      onChange={(event) => field.handleChange(event.target.value)}
-                      placeholder="Define the agent's responsibility prompt."
+                <div className="rounded-[20px] border border-white/8 bg-black/10 p-3">
+                  <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                    <Sparkles className="size-3.5" />
+                    Agent Prompt
+                  </div>
+                  <div className="space-y-3">
+                    <form.Field
+                      name="agent_identity_prompt"
+                      children={(field) => (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">Identity</p>
+                          <Textarea
+                            rows={3}
+                            value={field.state.value}
+                            onChange={(event) => field.handleChange(event.target.value)}
+                            placeholder="You are ... Define who this agent is."
+                          />
+                        </div>
+                      )}
                     />
-                  )}
-                />
-
-                <form.Field
-                  name="skills_prompt"
-                  children={(field) => (
-                    <Textarea
-                      rows={4}
-                      value={field.state.value}
-                      onChange={(event) => field.handleChange(event.target.value)}
-                      placeholder="Any extra operational guidance."
+                    <form.Field
+                      name="agent_responsibility_prompt"
+                      children={(field) => (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">Responsibility</p>
+                          <Textarea
+                            rows={5}
+                            value={field.state.value}
+                            onChange={(event) => field.handleChange(event.target.value)}
+                            placeholder="Define what this agent is responsible for."
+                          />
+                        </div>
+                      )}
                     />
-                  )}
-                />
+                    <form.Field
+                      name="agent_non_goals_prompt"
+                      children={(field) => (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">Non-goals</p>
+                          <Textarea
+                            rows={4}
+                            value={field.state.value}
+                            onChange={(event) => field.handleChange(event.target.value)}
+                            placeholder="Define what this agent should avoid or not own."
+                          />
+                        </div>
+                      )}
+                    />
+                  </div>
+                </div>
 
                 <form.Field
                   name="selected_skills"
@@ -212,6 +245,9 @@ export function AgentEditor({ agent, models, skills, mode, onDone }: Props) {
                           )
                         })}
                       </div>
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        Enabled skills are rendered as a short capability summary in the prompt. Free-form skills guidance is no longer injected separately.
+                      </p>
                     </div>
                   )}
                 />

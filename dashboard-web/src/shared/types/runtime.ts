@@ -9,6 +9,10 @@ export type RuntimeHealth = {
   }
 }
 
+export type AppSettings = {
+  global_system_prompt: string
+}
+
 export type SkillRecord = {
   id: string
   name: string
@@ -31,6 +35,9 @@ export type AgentProfile = {
   avatar_url?: string
   persona_prompt: string
   skills_prompt: string
+  agent_identity_prompt: string
+  agent_responsibility_prompt: string
+  agent_non_goals_prompt: string
   selected_skills: string[]
   default_model: string
   workspace_binding: string
@@ -99,7 +106,10 @@ export type TaskSession = {
     estimated_total_tokens?: number
     system_chars?: number
     user_chars?: number
+    compressed_chars?: number
     memory_chars?: number
   }
+  compressed_context?: string
+  compression_count?: number
   timeline?: TimelineEvent[]
 }

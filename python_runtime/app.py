@@ -59,6 +59,28 @@ CHANNELS_CONNECTIONS_PATH = Path(os.environ.get("ZDCODE_CHANNELS_CONNECTIONS", P
 DEFAULT_MODEL_KEY = "volcengine/ark-code-latest"
 MEMORY_ENABLED = False
 DEFAULT_TASK_MAX_TURNS = 30
+DEFAULT_GLOBAL_SYSTEM_PROMPT = """# Role
+You are operating inside a local multi-agent coding runtime.
+
+# System
+- All non-tool output is shown to the user.
+- Prefer verifying with tools before making claims about files, code, commands, or environment state.
+- Do not claim work was completed unless the tools or code changes actually completed it.
+- State uncertainty plainly when you are not sure.
+- Treat compressed history as partial context rather than a full transcript.
+- Report blocked actions, failed verification, and incomplete work explicitly.
+
+# Doing tasks
+- Keep work tightly scoped to the user request.
+- Avoid speculative abstractions, unrelated refactors, and unnecessary file creation.
+- Diagnose failures before switching tactics.
+- Delegate only when a specialist materially improves the result.
+- Keep answers concise and operational.
+
+# Actions with care
+- Be careful with destructive, irreversible, or high-blast-radius actions.
+- If a risky action is blocked or requires approval, explain that clearly and continue with safer alternatives when possible.
+"""
 SKILL_ROOTS = [
     Path.home() / ".codex" / "skills",
     Path.home() / ".agents" / "skills",
@@ -86,6 +108,9 @@ class Database:
                     avatar_url TEXT NOT NULL DEFAULT '',
                     persona_prompt TEXT NOT NULL DEFAULT '',
                     skills_prompt TEXT NOT NULL DEFAULT '',
+                    agent_identity_prompt TEXT NOT NULL DEFAULT '',
+                    agent_responsibility_prompt TEXT NOT NULL DEFAULT '',
+                    agent_non_goals_prompt TEXT NOT NULL DEFAULT '',
                     selected_skills TEXT NOT NULL DEFAULT '[]',
                     default_model TEXT NOT NULL DEFAULT 'gpt-5.4',
                     workspace_binding TEXT NOT NULL,
@@ -102,6 +127,8 @@ class Database:
                     title TEXT NOT NULL,
                     prompt TEXT NOT NULL,
                     max_turns INTEGER NOT NULL DEFAULT 30,
+                    compressed_context TEXT NOT NULL DEFAULT '',
+                    compression_count INTEGER NOT NULL DEFAULT 0,
                     source_kind TEXT NOT NULL DEFAULT 'manual',
                     source_provider TEXT NOT NULL DEFAULT '',
                     source_connection_id TEXT NOT NULL DEFAULT '',
@@ -286,6 +313,10 @@ class Database:
                 self._conn.execute("ALTER TABLE task_sessions ADD COLUMN source_connection_id TEXT NOT NULL DEFAULT ''")
             if "source_conversation_id" not in columns:
                 self._conn.execute("ALTER TABLE task_sessions ADD COLUMN source_conversation_id TEXT NOT NULL DEFAULT ''")
+            if "compressed_context" not in columns:
+                self._conn.execute("ALTER TABLE task_sessions ADD COLUMN compressed_context TEXT NOT NULL DEFAULT ''")
+            if "compression_count" not in columns:
+                self._conn.execute("ALTER TABLE task_sessions ADD COLUMN compression_count INTEGER NOT NULL DEFAULT 0")
             agent_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(agent_profiles)").fetchall()}
             if "avatar_url" not in agent_columns:
                 self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''")
@@ -293,6 +324,12 @@ class Database:
                 self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN selected_skills TEXT NOT NULL DEFAULT '[]'")
             if "channel_config" not in agent_columns:
                 self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN channel_config TEXT NOT NULL DEFAULT '{}'")
+            if "agent_identity_prompt" not in agent_columns:
+                self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN agent_identity_prompt TEXT NOT NULL DEFAULT ''")
+            if "agent_responsibility_prompt" not in agent_columns:
+                self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN agent_responsibility_prompt TEXT NOT NULL DEFAULT ''")
+            if "agent_non_goals_prompt" not in agent_columns:
+                self._conn.execute("ALTER TABLE agent_profiles ADD COLUMN agent_non_goals_prompt TEXT NOT NULL DEFAULT ''")
             self._conn.commit()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
@@ -325,6 +362,9 @@ class AgentCreatePayload(BaseModel):
     avatar_url: str = ""
     persona_prompt: str = ""
     skills_prompt: str = ""
+    agent_identity_prompt: str = ""
+    agent_responsibility_prompt: str = ""
+    agent_non_goals_prompt: str = ""
     selected_skills: list[str] = Field(default_factory=list)
     default_model: str = DEFAULT_MODEL_KEY
     workspace_binding: str
@@ -340,6 +380,9 @@ class AgentPatchPayload(BaseModel):
     avatar_url: str | None = None
     persona_prompt: str | None = None
     skills_prompt: str | None = None
+    agent_identity_prompt: str | None = None
+    agent_responsibility_prompt: str | None = None
+    agent_non_goals_prompt: str | None = None
     selected_skills: list[str] | None = None
     default_model: str | None = None
     workspace_binding: str | None = None
@@ -363,6 +406,10 @@ class TaskCreatePayload(BaseModel):
 
 class TaskMessagePayload(BaseModel):
     prompt: str
+
+
+class AppSettingsPayload(BaseModel):
+    global_system_prompt: str = ""
 
 
 class ChannelInboundPayload(BaseModel):
@@ -556,9 +603,76 @@ def set_setting(key: str, value: str) -> None:
     )
 
 
+def current_settings() -> dict[str, Any]:
+    return {
+        "global_system_prompt": get_setting("global_system_prompt", DEFAULT_GLOBAL_SYSTEM_PROMPT) or "",
+    }
+
+
 def configured_default_model() -> str:
     stored = get_setting("default_model", DEFAULT_MODEL_KEY)
     return stored or DEFAULT_MODEL_KEY
+
+
+def trim_prompt_block(value: str) -> str:
+    return "\n".join(line.rstrip() for line in (value or "").strip().splitlines()).strip()
+
+
+def default_agent_prompt_fields(name: str, description: str) -> dict[str, str]:
+    normalized_name = trim_prompt_block(name) or "This agent"
+    normalized_description = trim_prompt_block(description)
+    responsibility = normalized_description or "Handle the assigned work carefully and stay within the user's request."
+    return {
+        "identity": f"You are {normalized_name}.",
+        "responsibility": responsibility,
+        "non_goals": "Do not invent facts, hide uncertainty, or make unrelated changes.",
+    }
+
+
+def agent_prompt_fields_from_legacy(name: str, description: str, persona_prompt: str, skills_prompt: str) -> dict[str, str]:
+    defaults = default_agent_prompt_fields(name, description)
+    persona = trim_prompt_block(persona_prompt)
+    skills = trim_prompt_block(skills_prompt)
+    if not persona and not skills:
+        return defaults
+
+    identity = defaults["identity"]
+    responsibility_parts: list[str] = []
+    non_goals = defaults["non_goals"]
+
+    if persona:
+        lowered = persona.lower()
+        if lowered.startswith("you are ") or lowered.startswith("you’re ") or lowered.startswith("you are"):
+            identity = persona
+        else:
+            responsibility_parts.append(persona)
+    if skills:
+        responsibility_parts.append(skills)
+    responsibility = "\n".join(part for part in responsibility_parts if part).strip() or defaults["responsibility"]
+    return {
+        "identity": identity,
+        "responsibility": responsibility,
+        "non_goals": non_goals,
+    }
+
+
+def normalize_agent_prompt_fields(row: dict[str, Any]) -> dict[str, str]:
+    identity = trim_prompt_block(row.get("agent_identity_prompt") or "")
+    responsibility = trim_prompt_block(row.get("agent_responsibility_prompt") or "")
+    non_goals = trim_prompt_block(row.get("agent_non_goals_prompt") or "")
+    if identity or responsibility or non_goals:
+        defaults = default_agent_prompt_fields(row.get("name", ""), row.get("description", ""))
+        return {
+            "identity": identity or defaults["identity"],
+            "responsibility": responsibility or defaults["responsibility"],
+            "non_goals": non_goals or defaults["non_goals"],
+        }
+    return agent_prompt_fields_from_legacy(
+        row.get("name", ""),
+        row.get("description", ""),
+        row.get("persona_prompt", ""),
+        row.get("skills_prompt", ""),
+    )
 
 
 def sanitize_model_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -775,6 +889,10 @@ def normalize_agent(row: dict[str, Any] | None) -> dict[str, Any] | None:
     row["memory_policy"] = json_loads(row["memory_policy"], {})
     row["selected_skills"] = json_loads(row.get("selected_skills"), [])
     row["channel_config"] = {**default_channel_config(), **json_loads(row.get("channel_config"), {})}
+    prompt_fields = normalize_agent_prompt_fields(row)
+    row["agent_identity_prompt"] = prompt_fields["identity"]
+    row["agent_responsibility_prompt"] = prompt_fields["responsibility"]
+    row["agent_non_goals_prompt"] = prompt_fields["non_goals"]
     row["available_models"] = [item["model_key"] for item in list_models()]
     return row
 
@@ -785,6 +903,8 @@ def normalize_task(row: dict[str, Any] | None) -> dict[str, Any] | None:
     row["enabled_agent_ids"] = json_loads(row["enabled_agent_ids"], [])
     row["participating_agents"] = json_loads(row["participating_agents"], [])
     row["max_turns"] = int(row.get("max_turns") or DEFAULT_TASK_MAX_TURNS)
+    row["compression_count"] = int(row.get("compression_count") or 0)
+    row["compressed_context"] = row.get("compressed_context") or ""
     return row
 
 
@@ -910,12 +1030,25 @@ def create_agent(payload: AgentCreatePayload) -> dict[str, Any]:
     model_key = payload.default_model or configured_default_model()
     if not db.fetchone("SELECT model_key FROM model_registry WHERE model_key = ?", (model_key,)):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_key}")
+    prompt_fields = normalize_agent_prompt_fields(
+        {
+            "name": payload.name,
+            "description": payload.description,
+            "persona_prompt": payload.persona_prompt,
+            "skills_prompt": payload.skills_prompt,
+            "agent_identity_prompt": payload.agent_identity_prompt,
+            "agent_responsibility_prompt": payload.agent_responsibility_prompt,
+            "agent_non_goals_prompt": payload.agent_non_goals_prompt,
+        }
+    )
     db.execute(
         """
         INSERT INTO agent_profiles(
-            id, name, description, avatar_url, persona_prompt, skills_prompt, selected_skills, default_model,
+            id, name, description, avatar_url, persona_prompt, skills_prompt,
+            agent_identity_prompt, agent_responsibility_prompt, agent_non_goals_prompt,
+            selected_skills, default_model,
             workspace_binding, tool_profile, memory_policy, channel_config, enabled, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             agent_id,
@@ -924,6 +1057,9 @@ def create_agent(payload: AgentCreatePayload) -> dict[str, Any]:
             payload.avatar_url,
             payload.persona_prompt,
             payload.skills_prompt,
+            prompt_fields["identity"],
+            prompt_fields["responsibility"],
+            prompt_fields["non_goals"],
             json_dumps(payload.selected_skills),
             model_key,
             workspace,
@@ -960,10 +1096,26 @@ def patch_agent(agent_id: str, payload: AgentPatchPayload) -> dict[str, Any]:
         "channel_config": {**default_channel_config(), **current.get("channel_config", {}), **(payload.channel_config or {})},
         "enabled": current["enabled"] if payload.enabled is None else payload.enabled,
     }
+    prompt_fields = normalize_agent_prompt_fields(
+        {
+            "name": updated["name"],
+            "description": updated["description"],
+            "persona_prompt": updated["persona_prompt"],
+            "skills_prompt": updated["skills_prompt"],
+            "agent_identity_prompt": payload.agent_identity_prompt if payload.agent_identity_prompt is not None else current.get("agent_identity_prompt", ""),
+            "agent_responsibility_prompt": payload.agent_responsibility_prompt if payload.agent_responsibility_prompt is not None else current.get("agent_responsibility_prompt", ""),
+            "agent_non_goals_prompt": payload.agent_non_goals_prompt if payload.agent_non_goals_prompt is not None else current.get("agent_non_goals_prompt", ""),
+        }
+    )
+    updated["agent_identity_prompt"] = prompt_fields["identity"]
+    updated["agent_responsibility_prompt"] = prompt_fields["responsibility"]
+    updated["agent_non_goals_prompt"] = prompt_fields["non_goals"]
     db.execute(
         """
         UPDATE agent_profiles
-        SET name = ?, description = ?, avatar_url = ?, persona_prompt = ?, skills_prompt = ?, selected_skills = ?, default_model = ?,
+        SET name = ?, description = ?, avatar_url = ?, persona_prompt = ?, skills_prompt = ?,
+            agent_identity_prompt = ?, agent_responsibility_prompt = ?, agent_non_goals_prompt = ?,
+            selected_skills = ?, default_model = ?,
             workspace_binding = ?, tool_profile = ?, memory_policy = ?, channel_config = ?, enabled = ?, updated_at = ?
         WHERE id = ?
         """,
@@ -973,6 +1125,9 @@ def patch_agent(agent_id: str, payload: AgentPatchPayload) -> dict[str, Any]:
             updated["avatar_url"],
             updated["persona_prompt"],
             updated["skills_prompt"],
+            updated["agent_identity_prompt"],
+            updated["agent_responsibility_prompt"],
+            updated["agent_non_goals_prompt"],
             json_dumps(updated["selected_skills"]),
             updated["default_model"],
             updated["workspace_binding"],
@@ -1051,6 +1206,20 @@ def list_skills() -> list[dict[str, Any]]:
     return sorted(seen.values(), key=lambda item: item["name"].lower())
 
 
+def selected_skill_summaries(skill_ids: list[str], *, limit: int = 6) -> list[str]:
+    if not skill_ids:
+        return []
+    descriptions = {item["id"]: trim_prompt_block(item.get("description") or "") for item in list_skills()}
+    summaries: list[str] = []
+    for skill_id in skill_ids[:limit]:
+        description = descriptions.get(skill_id, "")
+        if description:
+            summaries.append(f"{skill_id}: {description[:140]}")
+        else:
+            summaries.append(skill_id)
+    return summaries
+
+
 def create_task(payload: TaskCreatePayload) -> dict[str, Any]:
     entry_agent = get_agent(payload.entry_agent_id)
     enabled_agent_ids = list(dict.fromkeys(payload.enabled_agent_ids or [payload.entry_agent_id]))
@@ -1062,17 +1231,19 @@ def create_task(payload: TaskCreatePayload) -> dict[str, Any]:
     db.execute(
         """
         INSERT INTO task_sessions(
-            id, title, prompt, max_turns, source_kind, source_provider, source_connection_id, source_conversation_id,
+            id, title, prompt, max_turns, compressed_context, compression_count, source_kind, source_provider, source_connection_id, source_conversation_id,
             entry_agent_id, entry_agent_name, enabled_agent_ids,
             participating_agents, active_agent_id, active_agent_name, status,
             last_run_id, last_error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
             payload.title,
             payload.prompt,
             max(1, int(payload.max_turns or DEFAULT_TASK_MAX_TURNS)),
+            "",
+            0,
             payload.source_kind or "manual",
             payload.source_provider or "",
             payload.source_connection_id or "",
@@ -1576,6 +1747,73 @@ def get_task(task_id: str) -> dict[str, Any]:
     return task
 
 
+def task_session_ids(task_id: str, enabled_agent_ids: list[str]) -> list[str]:
+    session_ids = [f"task:{task_id}:orchestrator"]
+    session_ids.extend(f"task:{task_id}:agent:{agent_id}" for agent_id in enabled_agent_ids)
+    return list(dict.fromkeys(session_ids))
+
+
+def reset_task_conversation_history(task: dict[str, Any]) -> None:
+    session_db_path = DB_PATH.parent / "agent-conversations.sqlite"
+    if not session_db_path.exists():
+        return
+    session_ids = task_session_ids(task["id"], task.get("enabled_agent_ids", []))
+    placeholders = ",".join("?" for _ in session_ids)
+    with sqlite3.connect(str(session_db_path)) as conn:
+        conn.execute(f"DELETE FROM agent_messages WHERE session_id IN ({placeholders})", session_ids)
+        conn.execute(f"DELETE FROM agent_sessions WHERE session_id IN ({placeholders})", session_ids)
+        conn.commit()
+
+
+def build_compressed_context(task: dict[str, Any]) -> str:
+    timeline = task.get("timeline") or []
+    prior_summary = trim_prompt_block(task.get("compressed_context") or "")
+    user_updates: list[str] = []
+    tool_findings: list[str] = []
+    final_states: list[str] = []
+
+    for event in timeline:
+        event_type = event.get("event_type") or ""
+        body = trim_prompt_block(event.get("body") or "")
+        title = trim_prompt_block(event.get("title") or "")
+        if event_type in {"user_message", "channel_message"} and body:
+            user_updates.append(body)
+        elif event_type == "tool_result" and body:
+            tool_findings.append(f"{title}: {body}")
+        elif event_type in {"task_completed", "task_failed", "task_cancelled", "approval_requested"}:
+            if body or title:
+                final_states.append(f"{title}: {body}".strip(": "))
+
+    def trim_items(items: list[str], limit: int, item_chars: int = 240) -> list[str]:
+        trimmed: list[str] = []
+        for item in items[:limit]:
+            text = item[:item_chars]
+            if len(item) > item_chars:
+                text += "..."
+            trimmed.append(text)
+        return trimmed
+
+    sections: list[str] = [
+        "# Compressed context",
+        "This is a partial summary of earlier turns. It may omit details from the full transcript.",
+        "",
+        "## Original goal",
+        trim_prompt_block(task.get("prompt") or ""),
+    ]
+    if prior_summary:
+        sections.extend(["", "## Previous summary", prior_summary[:600] + ("..." if len(prior_summary) > 600 else "")])
+    if user_updates:
+        sections.extend(["", "## Later user updates", *[f"- {item}" for item in trim_items(user_updates[-3:], 3)]])
+    if tool_findings:
+        sections.extend(["", "## Important tool results", *[f"- {item}" for item in trim_items(tool_findings[-4:], 4)]])
+    if final_states:
+        sections.extend(["", "## Current state", *[f"- {item}" for item in trim_items(final_states[-3:], 3)]])
+    result = "\n".join(part for part in sections if part is not None).strip()
+    if len(result) > 2200:
+        result = result[:2200].rstrip() + "..."
+    return result
+
+
 def update_task_status(task_id: str, *, status: str, active_agent_id: str | None = None, active_agent_name: str | None = None, participating_agents: list[str] | None = None, last_run_id: str | None = None, last_error: str | None = None) -> None:
     current = normalize_task(db.fetchone("SELECT * FROM task_sessions WHERE id = ?", (task_id,)))
     if not current:
@@ -1635,6 +1873,7 @@ class PendingRunBundle:
 
 
 PENDING_RUNS: dict[str, PendingRunBundle] = {}
+RUNNING_EXECUTIONS: dict[str, asyncio.Task[Any]] = {}
 
 
 def provider_status() -> dict[str, Any]:
@@ -1649,6 +1888,19 @@ def provider_status() -> dict[str, Any]:
         "defaultModel": configured_default_model(),
         "modelCount": len(list_models()),
     }
+
+
+def schedule_task_execution(task_id: str, *, resume_run_id: str | None = None, input_text: str | None = None) -> asyncio.Task[Any]:
+    task = asyncio.create_task(run_task_execution(task_id, resume_run_id=resume_run_id, input_text=input_text))
+    RUNNING_EXECUTIONS[task_id] = task
+
+    def _cleanup(_: asyncio.Task[Any]) -> None:
+        current = RUNNING_EXECUTIONS.get(task_id)
+        if current is task:
+            RUNNING_EXECUTIONS.pop(task_id, None)
+
+    task.add_done_callback(_cleanup)
+    return task
 
 
 def risk_from_command(command: str) -> str | None:
@@ -1777,38 +2029,65 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
         memory_context = retrieve_memory(agent_profile)
         local_roots = allowed_roots_for(agent_profile)
         selected_skills = agent_profile.get("selected_skills", [])
-        instructions = [
-            f"Agent name: {agent_profile['name']}",
-            f"Description: {agent_profile['description']}",
-            agent_profile["persona_prompt"],
-            agent_profile["skills_prompt"],
+        global_system_prompt = current_settings().get("global_system_prompt", "").strip()
+        compressed_context = str(task.get("compressed_context") or "").strip()
+        skill_summaries = selected_skill_summaries(selected_skills)
+
+        sections: list[str] = []
+        if global_system_prompt:
+            sections.append(global_system_prompt)
+
+        agent_lines = [
+            "# Agent prompt",
+            f"## Identity\n{agent_profile['agent_identity_prompt']}",
+            f"## Responsibility\n{agent_profile['agent_responsibility_prompt']}",
+            f"## Non-goals\n{agent_profile['agent_non_goals_prompt']}",
         ]
-        if selected_skills:
-            instructions.append("Enabled skills:")
-            instructions.append("\n".join(f"- {skill}" for skill in selected_skills))
-        if memory_context:
-            instructions.append("Relevant long-term memory:")
-            instructions.append(memory_context)
+        sections.append("\n\n".join(part for part in agent_lines if trim_prompt_block(part)))
+
+        if skill_summaries:
+            sections.append("# Enabled capabilities\n" + "\n".join(f"- {item}" for item in skill_summaries))
+
+        runtime_items = [
+            f"Agent: {agent_profile['name']}",
+            f"Mode: {'orchestrator' if is_orchestrator else 'specialist'}",
+            f"Working directory: {agent_profile['workspace_binding']}",
+            "Allowed local roots: " + ", ".join(str(root) for root in local_roots),
+            f"Enabled specialist agents: {', '.join(profile['name'] for profile in enabled_agents if profile['id'] != agent_profile['id']) or 'none'}",
+            f"Task source: {task.get('source_kind') or 'manual'}",
+        ]
         if is_orchestrator:
-            instructions.append(
-                "You are the primary agent for this task. Use specialist tools when domain expertise helps, and use shell/file/browser tools yourself for local workspace actions."
+            runtime_items.append(
+                "Execution rule: you own the user-facing result and should delegate only when a specialist materially improves the outcome."
             )
-        instructions.append(
-            "When the user asks you to inspect files, run commands, or check the local machine, actually use the available tools first. Do not stop after saying you will do something."
+        else:
+            runtime_items.append(
+                "Execution rule: stay within your specialist scope and return concise results to the orchestrator."
+            )
+        runtime_items.append(
+            "Tool rule: when asked to inspect files, run commands, or check the local machine, use the available tools before answering."
         )
-        instructions.append(
-            "You can directly access local files under these roots: "
-            + ", ".join(str(root) for root in local_roots)
+        runtime_items.append(
+            f"Long-term memory: {'enabled' if MEMORY_ENABLED else 'disabled'}"
         )
-        if not MEMORY_ENABLED:
-            instructions.append("Long-term memory is disabled for this runtime. Do not assume any memory context is available.")
-        prompt_text = "\n\n".join([part for part in instructions if part])
+        sections.append("# Runtime context\n" + "\n".join(f"- {item}" for item in runtime_items))
+
+        if compressed_context:
+            sections.append(compressed_context)
+        if memory_context:
+            sections.append("# Relevant memory\n" + "\n".join(f"- {line}" for line in memory_context.splitlines()))
+
+        prompt_text = "\n\n".join([part for part in sections if trim_prompt_block(part)])
         prompt_parts = {
             "agent_name": agent_profile["name"],
             "description": agent_profile["description"],
-            "persona_prompt": agent_profile["persona_prompt"],
-            "skills_prompt": agent_profile["skills_prompt"],
+            "agent_identity_prompt": agent_profile["agent_identity_prompt"],
+            "agent_responsibility_prompt": agent_profile["agent_responsibility_prompt"],
+            "agent_non_goals_prompt": agent_profile["agent_non_goals_prompt"],
             "selected_skills": selected_skills,
+            "skill_summaries": skill_summaries,
+            "global_system_prompt": global_system_prompt,
+            "compressed_context": compressed_context,
             "memory_context": memory_context,
             "memory_enabled": MEMORY_ENABLED,
             "local_roots": [str(root) for root in local_roots],
@@ -2074,6 +2353,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
                     "history_messages": 0,
                     "system_chars": len(child_prompt_parts["final_system_prompt"]),
                     "user_chars": len(input),
+                    "compressed_chars": len(child_prompt_parts["compressed_context"]),
                     "memory_chars": len(child_prompt_parts["memory_context"]),
                     "estimated_total_tokens": estimate_tokens(child_prompt_parts["final_system_prompt"] + "\n" + input),
                 },
@@ -2125,6 +2405,7 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             "history_messages": 0,
             "system_chars": len(prompt_parts["final_system_prompt"]),
             "user_chars": len(current_input),
+            "compressed_chars": len(prompt_parts["compressed_context"]),
             "memory_chars": len(prompt_parts["memory_context"]),
             "estimated_total_tokens": estimate_tokens(prompt_parts["final_system_prompt"] + "\n" + current_input),
         },
@@ -2253,6 +2534,17 @@ async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, 
         update_task_status(task_id, status="completed", last_run_id=run_id, last_error="")
         log_timeline(task_id, "task_completed", "Task completed", run_id=run_id, agent_id=entry_agent["id"], agent_name=entry_agent["name"], body=final_output[:400])
         queue_task_channel_push(task, stage="final", text=final_output or "任务已完成。")
+    except asyncio.CancelledError:
+        message = "Task execution was cancelled."
+        run_id = run_id or resume_run_id or task.get("last_run_id")
+        if run_id:
+            PENDING_RUNS.pop(run_id, None)
+            complete_run(run_id, "cancelled", message, {"cancelled": True})
+        db.execute("DELETE FROM approvals WHERE task_session_id = ?", (task_id,))
+        update_task_status(task_id, status="cancelled", last_run_id=run_id, last_error="")
+        log_timeline(task_id, "task_cancelled", "Task cancelled", run_id=run_id, body=message)
+        queue_task_channel_push(task, stage="error", text="任务已终止。")
+        raise
     except Exception as exc:
         message = str(exc)
         run_id = run_id or resume_run_id or task.get("last_run_id")
@@ -2299,6 +2591,17 @@ async def health() -> dict[str, Any]:
 @app.get("/models")
 async def models_index() -> list[dict[str, Any]]:
     return list_models()
+
+
+@app.get("/settings")
+async def settings_show() -> dict[str, Any]:
+    return current_settings()
+
+
+@app.patch("/settings")
+async def settings_update(payload: AppSettingsPayload) -> dict[str, Any]:
+    set_setting("global_system_prompt", payload.global_system_prompt or "")
+    return current_settings()
 
 
 @app.get("/skills")
@@ -2374,7 +2677,7 @@ async def tasks_index() -> list[dict[str, Any]]:
 @app.post("/tasks")
 async def tasks_create(payload: TaskCreatePayload) -> dict[str, Any]:
     task = create_task(payload)
-    asyncio.create_task(run_task_execution(task["id"]))
+    schedule_task_execution(task["id"])
     return task
 
 
@@ -2395,7 +2698,45 @@ async def tasks_message(task_id: str, payload: TaskMessagePayload) -> dict[str, 
         (utcnow(), task_id),
     )
     log_timeline(task_id, "user_message", "User follow-up", body=prompt)
-    asyncio.create_task(run_task_execution(task_id, input_text=prompt))
+    schedule_task_execution(task_id, input_text=prompt)
+    return get_task(task_id)
+
+
+@app.post("/tasks/{task_id}/cancel")
+async def tasks_cancel(task_id: str) -> dict[str, Any]:
+    task = get_task(task_id)
+    if task["status"] == "waiting_approval":
+        run_id = task.get("last_run_id")
+        if run_id:
+            PENDING_RUNS.pop(run_id, None)
+            complete_run(run_id, "cancelled", "Task cancelled while waiting for approval.", {"cancelled": True})
+        db.execute("DELETE FROM approvals WHERE task_session_id = ?", (task_id,))
+        update_task_status(task_id, status="cancelled", last_error="")
+        log_timeline(task_id, "task_cancelled", "Task cancelled", run_id=run_id, body="Cancelled while waiting for approval.")
+        return get_task(task_id)
+    if task["status"] != "running":
+        raise HTTPException(status_code=409, detail="Only running or approval-waiting tasks can be cancelled.")
+    execution = RUNNING_EXECUTIONS.get(task_id)
+    if not execution:
+        raise HTTPException(status_code=409, detail="No running execution found for this task.")
+    execution.cancel()
+    return {"ok": True, "task_id": task_id, "status": "cancelling"}
+
+
+@app.post("/tasks/{task_id}/compress-context")
+async def tasks_compress_context(task_id: str) -> dict[str, Any]:
+    task = get_task(task_id)
+    if task["status"] in {"running", "waiting_approval"}:
+        raise HTTPException(status_code=409, detail="Task must be idle before compressing context.")
+    compressed = build_compressed_context(task)
+    if not compressed:
+        raise HTTPException(status_code=400, detail="No task context is available to compress.")
+    db.execute(
+        "UPDATE task_sessions SET compressed_context = ?, compression_count = ?, updated_at = ? WHERE id = ?",
+        (compressed, int(task.get("compression_count") or 0) + 1, utcnow(), task_id),
+    )
+    reset_task_conversation_history(task)
+    log_timeline(task_id, "context_compressed", "Context compressed", body=compressed[:500], payload={"compression_count": int(task.get("compression_count") or 0) + 1})
     return get_task(task_id)
 
 
@@ -2513,7 +2854,7 @@ async def channels_message(payload: ChannelInboundPayload) -> dict[str, Any]:
             max_turns=max_turns,
         )
         log_timeline(task["id"], "channel_message", f"{payload.provider} message received", body=text, payload={"conversation_id": payload.conversation_id, "message_id": payload.message_id, "force_new": force_new})
-        asyncio.create_task(run_task_execution(task["id"]))
+        schedule_task_execution(task["id"])
         return {
             "ok": True,
             "duplicate": False,
@@ -2551,7 +2892,7 @@ async def channels_message(payload: ChannelInboundPayload) -> dict[str, Any]:
         enabled_agent_ids=enabled_agent_ids,
         max_turns=max_turns,
     )
-    asyncio.create_task(run_task_execution(current_task["id"], input_text=normalized_prompt))
+    schedule_task_execution(current_task["id"], input_text=normalized_prompt)
     return {
         "ok": True,
         "duplicate": False,
@@ -2644,7 +2985,7 @@ async def runs_resume(run_id: str) -> dict[str, Any]:
     bundle = PENDING_RUNS.get(run_id)
     if not bundle:
         raise HTTPException(status_code=404, detail=f"No pending run state for run: {run_id}")
-    asyncio.create_task(run_task_execution(bundle.task_id, resume_run_id=run_id))
+    schedule_task_execution(bundle.task_id, resume_run_id=run_id)
     return {"ok": True, "run_id": run_id, "task_session_id": bundle.task_id}
 
 

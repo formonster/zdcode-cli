@@ -1,12 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'motion/react'
-import { Activity, ArrowUp, Bot, Circle, Gauge, TerminalSquare } from 'lucide-react'
+import { Activity, ArrowUp, Bot, Circle, Gauge, Scissors, Square, TerminalSquare } from 'lucide-react'
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useDashboardStore } from '@/features/dashboard/store/dashboard-store'
-import { sendTaskMessage } from '@/features/tasks/api/dashboard-api'
+import { cancelTask, compressTaskContext, sendTaskMessage } from '@/features/tasks/api/dashboard-api'
 import type { TaskSession, TimelineEvent } from '@/shared/types/runtime'
 import * as ScrollAreaPrimitive from '@radix-ui/react-scroll-area'
 import { useAutoScroll } from '@/shared/hooks/use-auto-scroll'
@@ -69,6 +69,36 @@ export function TaskDetail({ task }: Props) {
     },
   })
 
+  const cancelMutation = useMutation({
+    mutationFn: async () => {
+      if (!task) return null
+      return cancelTask(task.id)
+    },
+    onSuccess: async () => {
+      if (task) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+          queryClient.invalidateQueries({ queryKey: ['task', task.id] }),
+        ])
+      }
+    },
+  })
+
+  const compressMutation = useMutation({
+    mutationFn: async () => {
+      if (!task) return task
+      return compressTaskContext(task.id)
+    },
+    onSuccess: async () => {
+      if (task) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+          queryClient.invalidateQueries({ queryKey: ['task', task.id] }),
+        ])
+      }
+    },
+  })
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Send on Enter (without Shift), allow Shift+Enter for new line
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -89,6 +119,10 @@ export function TaskDetail({ task }: Props) {
       </div>
     )
   }
+
+  const canSend = task.status !== 'running' && task.status !== 'waiting_approval'
+  const canCancel = task.status === 'running' || task.status === 'waiting_approval'
+  const canCompress = !canCancel && Boolean(task.timeline?.length)
 
   return (
     <div className="panel-surface codex-grid flex h-[calc(100vh-24px)] flex-col rounded-[28px] p-3">
@@ -127,12 +161,17 @@ export function TaskDetail({ task }: Props) {
           rows={4}
           className="w-full resize-none bg-transparent text-sm leading-6 outline-none placeholder:text-muted-foreground"
           placeholder="Continue this task... (Enter to send, Shift+Enter for new line)"
+          disabled={!canSend}
         />
         <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5">
               <Gauge className="size-3.5" />
               <span>{task.context_summary?.estimated_total_tokens ?? 0}</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5">
+              <Scissors className="size-3.5" />
+              <span>{task.compression_count ?? 0}</span>
             </div>
             <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5">
               <Activity className="size-3.5" />
@@ -153,15 +192,35 @@ export function TaskDetail({ task }: Props) {
               </div>
             </div>
           </div>
-          <Button
-            size="icon"
-            variant="accent"
-            className="size-10 rounded-full"
-            disabled={!composerValue.trim() || messageMutation.isPending}
-            onClick={() => void messageMutation.mutateAsync()}
-          >
-            <ArrowUp className="size-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!canCompress || compressMutation.isPending}
+              onClick={() => void compressMutation.mutateAsync()}
+            >
+              <Scissors className="mr-2 size-3.5" />
+              Compress
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!canCancel || cancelMutation.isPending}
+              onClick={() => void cancelMutation.mutateAsync()}
+            >
+              <Square className="mr-2 size-3.5" />
+              Terminate
+            </Button>
+            <Button
+              size="icon"
+              variant="accent"
+              className="size-10 rounded-full"
+              disabled={!canSend || !composerValue.trim() || messageMutation.isPending}
+              onClick={() => void messageMutation.mutateAsync()}
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          </div>
         </div>
       </div>
     </div>

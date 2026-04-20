@@ -6,6 +6,7 @@ type Selection =
   | { type: 'new-task' }
   | { type: 'task'; id: string }
   | { type: 'agent'; id: string }
+  | { type: 'settings' }
 
 type DashboardState = {
   selection: Selection
