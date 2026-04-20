@@ -31,7 +31,7 @@ export function AgentList({ agents }: Props) {
 
   return (
     <div className="flex min-h-0 flex-col">
-      <ScrollArea className="h-[280px] pr-2">
+      <ScrollArea className="max-h-[280px]">
         <div className="space-y-1.5">
           {agents.map((agent) => {
             const selected = selection.type === 'agent' && selection.id === agent.id

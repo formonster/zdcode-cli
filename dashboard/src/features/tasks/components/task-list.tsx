@@ -36,7 +36,7 @@ export function TaskList({ tasks }: Props) {
   })
 
   return (
-    <ScrollArea className="h-[calc(100vh-360px)] pr-2">
+    <ScrollArea>
       <div className="space-y-1.5">
         {tasks.map((task, index) => {
           const selected = selection.type === 'task' && selection.id === task.id

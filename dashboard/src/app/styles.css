@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+body * {
+  box-sizing: border-box;
+}
+
 @theme {
   --font-sans: "SF Pro Display", "IBM Plex Sans", "Segoe UI Variable", "Helvetica Neue", sans-serif;
   --font-mono: "SF Mono", "IBM Plex Mono", "JetBrains Mono", monospace;

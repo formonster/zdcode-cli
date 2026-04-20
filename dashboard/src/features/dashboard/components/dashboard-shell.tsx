@@ -93,7 +93,7 @@ export function DashboardShell() {
 
   return (
     <div className="h-screen overflow-hidden p-3">
-      <div className="mx-auto grid h-full max-w-[1800px] grid-cols-[280px_minmax(0,1fr)] gap-3">
+      <div className="mx-auto grid h-full max-w-[1800px] grid-cols-[300px_minmax(0,1fr)] gap-3">
         <aside className="panel-surface flex min-h-0 flex-col rounded-[24px] p-3">
           <div className="mb-2 flex items-center justify-between px-1">
             <div className="flex items-center gap-2">
