@@ -86,7 +86,7 @@ export function DashboardShell() {
       return <TaskDetail task={taskDetailQuery.data} />
     }
     if (selection.type === 'settings') {
-      return <SettingsEditor settings={settingsQuery.data} />
+      return <SettingsEditor settings={settingsQuery.data} models={models} />
     }
     return <NewTaskForm agents={agents} />
   }, [agentDetailQuery.data, agents, models, selection, settingsQuery.data, skills, taskDetailQuery.data])

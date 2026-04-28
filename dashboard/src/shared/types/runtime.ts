@@ -23,9 +23,40 @@ export type SkillRecord = {
 export type ModelRecord = {
   model_key: string
   provider: string
+  model_id?: string
   display_name: string
   alias?: string
+  base_url?: string
+  api_type?: string
+  auth_mode?: string
+  context_window?: number
+  max_tokens?: number
+  supports_text?: boolean
+  supports_image?: boolean
+  enabled?: boolean
+  is_primary?: boolean
+  source?: string
+  provider_configured?: boolean
+  api_key_present?: boolean
   is_default?: boolean
+}
+
+export type ModelWritePayload = {
+  model_key: string
+  provider: string
+  model_id: string
+  display_name: string
+  alias: string
+  base_url: string
+  api_type: string
+  auth_mode: string
+  context_window: number
+  max_tokens: number
+  supports_text: boolean
+  supports_image: boolean
+  enabled: boolean
+  is_primary: boolean
+  api_key?: string
 }
 
 export type AgentProfile = {

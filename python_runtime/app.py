@@ -4,6 +4,7 @@ import asyncio
 import base64
 import copy
 import importlib.util
+import io
 import json
 import mimetypes
 import os
@@ -482,6 +483,41 @@ class ModelDefaultPayload(BaseModel):
     model_key: str
 
 
+class ModelWritePayload(BaseModel):
+    model_key: str
+    provider: str
+    model_id: str
+    display_name: str = ""
+    alias: str = ""
+    base_url: str = ""
+    api_type: str = "openai-completions"
+    auth_mode: str = "api_key"
+    context_window: int = 0
+    max_tokens: int = 0
+    supports_text: bool = True
+    supports_image: bool = False
+    enabled: bool = True
+    is_primary: bool = False
+    api_key: str = ""
+
+
+class ModelPatchPayload(BaseModel):
+    provider: str | None = None
+    model_id: str | None = None
+    display_name: str | None = None
+    alias: str | None = None
+    base_url: str | None = None
+    api_type: str | None = None
+    auth_mode: str | None = None
+    context_window: int | None = None
+    max_tokens: int | None = None
+    supports_text: bool | None = None
+    supports_image: bool | None = None
+    enabled: bool | None = None
+    is_primary: bool | None = None
+    api_key: str | None = None
+
+
 class MemoryProviderBase:
     provider_name = "local"
 
@@ -737,6 +773,163 @@ def get_model_raw(model_key: str) -> dict[str, Any]:
     return row
 
 
+def normalize_model_payload(payload: ModelWritePayload | ModelPatchPayload, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    def text_value(field: str, default: str = "") -> str:
+        value = getattr(payload, field, None)
+        if value is None and existing is not None:
+            value = existing.get(field)
+        if value is None:
+            value = default
+        return str(value).strip()
+
+    def int_value(field: str, default: int = 0) -> int:
+        value = getattr(payload, field, None)
+        if value is None and existing is not None:
+            value = existing.get(field)
+        if value is None:
+            return default
+        return max(0, int(value))
+
+    def bool_value(field: str, default: bool) -> bool:
+        value = getattr(payload, field, None)
+        if value is None and existing is not None:
+            value = existing.get(field)
+        if value is None:
+            return default
+        return bool(value)
+
+    model_key = text_value("model_key", existing.get("model_key", "") if existing else "")
+    provider = text_value("provider")
+    model_id = text_value("model_id")
+    display_name = text_value("display_name", model_id)
+    alias = text_value("alias")
+    base_url = text_value("base_url")
+    api_type = text_value("api_type", "openai-completions")
+    auth_mode = text_value("auth_mode", "api_key")
+    api_key = getattr(payload, "api_key", None)
+    raw_config = json_loads(existing.get("raw_config") if existing else {}, {}) if existing else {}
+
+    if not model_key:
+        raise HTTPException(status_code=400, detail="model_key is required.")
+    if "/" not in model_key:
+        raise HTTPException(status_code=400, detail='model_key must use "provider/model" format.')
+    if not provider:
+        provider = model_key.split("/", 1)[0]
+    if not model_id:
+        model_id = model_key.split("/", 1)[1]
+    if not display_name:
+        display_name = model_id
+
+    raw_config.update(
+        {
+            "provider": provider,
+            "baseUrl": base_url,
+            "api": api_type,
+            "model": {
+                **(raw_config.get("model") if isinstance(raw_config.get("model"), dict) else {}),
+                "id": model_id,
+                "name": display_name,
+                "api": api_type,
+                "contextWindow": int_value("context_window"),
+                "maxTokens": int_value("max_tokens"),
+                "input": [
+                    *("text" for _ in [0] if bool_value("supports_text", True)),
+                    *("image" for _ in [0] if bool_value("supports_image", False)),
+                ],
+            },
+        }
+    )
+    if api_key is not None and api_key.strip() and api_key.strip() != "***":
+        raw_config["apiKey"] = api_key.strip()
+
+    return {
+        "model_key": model_key,
+        "provider": provider,
+        "model_id": model_id,
+        "display_name": display_name,
+        "alias": alias,
+        "base_url": base_url,
+        "api_type": api_type,
+        "auth_mode": auth_mode,
+        "context_window": int_value("context_window"),
+        "max_tokens": int_value("max_tokens"),
+        "supports_text": bool_value("supports_text", True),
+        "supports_image": bool_value("supports_image", False),
+        "enabled": bool_value("enabled", True),
+        "is_primary": bool_value("is_primary", False),
+        "source": "manual",
+        "raw_config": raw_config,
+    }
+
+
+def create_model(payload: ModelWritePayload) -> dict[str, Any]:
+    record = normalize_model_payload(payload)
+    if db.fetchone("SELECT model_key FROM model_registry WHERE model_key = ?", (record["model_key"],)):
+        raise HTTPException(status_code=409, detail=f"Model already exists: {record['model_key']}")
+    db.execute(
+        """
+        INSERT INTO model_registry(
+            model_key, provider, model_id, display_name, alias, base_url, api_type, auth_mode,
+            context_window, max_tokens, supports_text, supports_image, enabled, is_primary, source, raw_config, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record["model_key"],
+            record["provider"],
+            record["model_id"],
+            record["display_name"],
+            record["alias"],
+            record["base_url"],
+            record["api_type"],
+            record["auth_mode"],
+            record["context_window"],
+            record["max_tokens"],
+            1 if record["supports_text"] else 0,
+            1 if record["supports_image"] else 0,
+            1 if record["enabled"] else 0,
+            1 if record["is_primary"] else 0,
+            record["source"],
+            json_dumps(record["raw_config"]),
+            utcnow(),
+        ),
+    )
+    return get_model(record["model_key"])
+
+
+def patch_model(model_key: str, payload: ModelPatchPayload) -> dict[str, Any]:
+    existing = get_model_raw(model_key)
+    record = normalize_model_payload(payload, existing)
+    db.execute(
+        """
+        UPDATE model_registry SET
+            provider = ?, model_id = ?, display_name = ?, alias = ?, base_url = ?, api_type = ?, auth_mode = ?,
+            context_window = ?, max_tokens = ?, supports_text = ?, supports_image = ?, enabled = ?, is_primary = ?,
+            source = ?, raw_config = ?, updated_at = ?
+        WHERE model_key = ?
+        """,
+        (
+            record["provider"],
+            record["model_id"],
+            record["display_name"],
+            record["alias"],
+            record["base_url"],
+            record["api_type"],
+            record["auth_mode"],
+            record["context_window"],
+            record["max_tokens"],
+            1 if record["supports_text"] else 0,
+            1 if record["supports_image"] else 0,
+            1 if record["enabled"] else 0,
+            1 if record["is_primary"] else 0,
+            record["source"],
+            json_dumps(record["raw_config"]),
+            utcnow(),
+            model_key,
+        ),
+    )
+    return get_model(model_key)
+
+
 def parse_openclaw_models() -> tuple[list[dict[str, Any]], str]:
     if not OPENCLAW_CONFIG_PATH.exists():
         return (
@@ -840,7 +1033,12 @@ def parse_openclaw_models() -> tuple[list[dict[str, Any]], str]:
 
 def sync_models_from_openclaw() -> dict[str, Any]:
     records, preferred_default = parse_openclaw_models()
-    db.execute("DELETE FROM model_registry")
+    manual_keys = {
+        item["model_key"]
+        for item in db.fetchall("SELECT model_key FROM model_registry WHERE source = 'manual'")
+    }
+    records = [item for item in records if item["model_key"] not in manual_keys]
+    db.execute("DELETE FROM model_registry WHERE source != 'manual'")
     db.executemany(
         """
         INSERT INTO model_registry(
@@ -2064,6 +2262,207 @@ def build_compressed_context(task: dict[str, Any]) -> str:
     return result
 
 
+VISUAL_CONTENT_CLAIM_RE = re.compile(
+    r"(我看到了|我能看到|从.*截图上.*看到|现在是.*页面|标题|按钮|右下角|蓝色.*按钮|登录页面|图库页面)"
+)
+STRONG_VERIFICATION_CLAIM_RE = re.compile(
+    r"(验证(成功|完成|完了|通过)|测试(通过|成功|好了)|修复(好了|成功|完成)|修复逻辑验证|完全正确|已经解决|问题已解决|bug已修复|这就是修复后的效果)"
+)
+USER_CONFIRMATION_RE = re.compile(r"(可以了|好了|修复了|解决了|没问题了|通过了|成功了)")
+
+
+def summarize_tool_payload(payload: dict[str, Any]) -> str:
+    tool_name = str(payload.get("tool") or "")
+    if tool_name == "shell":
+        return str(payload.get("command") or "")
+    if tool_name == "run_local_command":
+        return str(payload.get("command") or "")
+    if tool_name == "agent-browser":
+        if payload.get("action") == "screenshot":
+            return "screenshot"
+        return str(payload.get("command") or "")
+    return tool_name
+
+
+def screenshot_semantic_notice() -> str:
+    return (
+        "Screenshot captured.\n"
+        "This result only proves that an image file was generated.\n"
+        "It does not provide semantic understanding of the page contents.\n"
+        "Do not claim to have seen titles, buttons, layout, or page state from this artifact alone."
+    )
+
+
+def inspect_screenshot_artifact(image_path: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "path_exists": image_path.exists(),
+        "semantic_visual_evidence": False,
+    }
+    if not image_path.exists():
+        return result
+
+    result["size_bytes"] = image_path.stat().st_size
+    if not import_available("PIL"):
+        result["analysis"] = "pillow_unavailable"
+        return result
+
+    try:
+        from PIL import Image, ImageStat  # type: ignore
+
+        with Image.open(io.BytesIO(image_path.read_bytes())) as image:
+            rgb = image.convert("RGB")
+            stat = ImageStat.Stat(rgb)
+            means = stat.mean
+            extrema = stat.extrema
+            max_mean = max(means) if means else 0.0
+            channel_ranges = [high - low for low, high in extrema] if extrema else [0]
+            max_range = max(channel_ranges) if channel_ranges else 0
+            near_black = max_mean < 5.0 and max_range < 8
+            near_monochrome = max_range < 4
+            result.update(
+                {
+                    "analysis": "ok",
+                    "mean_rgb": [round(value, 2) for value in means],
+                    "max_channel_range": round(float(max_range), 2),
+                    "likely_near_black": near_black,
+                    "likely_monochrome": near_monochrome,
+                }
+            )
+    except Exception as exc:
+        result["analysis"] = f"failed:{exc}"
+    return result
+
+
+def has_strong_visual_text_evidence(timeline: list[dict[str, Any]]) -> bool:
+    for event in timeline:
+        if event.get("event_type") != "tool_result":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("tool") != "agent-browser":
+            continue
+        if payload.get("action") == "screenshot":
+            continue
+        command = str(payload.get("command") or "")
+        result = payload.get("result")
+        page_url = str(payload.get("page_url") or "")
+        body = str(event.get("body") or "")
+
+        if command.startswith(("snapshot", "eval", "find", "get")):
+            serialized = json_dumps(result) if result is not None else body
+            lowered = serialized.lower()
+            if "about:blank" in lowered:
+                continue
+            if "(no interactive elements)" in lowered:
+                continue
+            return True
+        if command.startswith("open") and page_url and not page_url.startswith("about:blank"):
+            if "Title:" in body:
+                return True
+    return False
+
+
+def has_verification_evidence(timeline: list[dict[str, Any]]) -> bool:
+    verification_terms = (
+        " test",
+        "pytest",
+        "vitest",
+        "jest",
+        "playwright",
+        "cypress",
+        "pnpm test",
+        "npm test",
+        "cargo test",
+        "go test",
+    )
+    for event in timeline:
+        if event.get("event_type") != "tool_result":
+            continue
+        payload = event.get("payload") or {}
+        tool_name = str(payload.get("tool") or "")
+        summary = summarize_tool_payload(payload).lower()
+        if tool_name in {"shell", "run_local_command"} and any(term in f" {summary}" for term in verification_terms):
+            if int(payload.get("returncode") or 0) == 0:
+                return True
+        if tool_name == "agent-browser":
+            command = str(payload.get("command") or "")
+            if command.startswith(("click", "fill", "press", "snapshot", "eval", "find")):
+                return True
+    return False
+
+
+def has_user_confirmation(timeline: list[dict[str, Any]]) -> bool:
+    for event in reversed(timeline[-8:]):
+        if event.get("event_type") not in {"user_message", "channel_message"}:
+            continue
+        body = str(event.get("body") or "")
+        if USER_CONFIRMATION_RE.search(body):
+            return True
+    return False
+
+
+def audit_final_output(task_id: str, run_id: str, final_output: str) -> tuple[str, dict[str, Any]]:
+    timeline = [
+        normalize_timeline_event(item)
+        for item in db.fetchall(
+            "SELECT * FROM timeline_events WHERE task_session_id = ? AND run_id = ? ORDER BY id ASC",
+            (task_id, run_id),
+        )
+    ]
+    findings: list[str] = []
+    visual_evidence = has_strong_visual_text_evidence(timeline)
+    verification_evidence = has_verification_evidence(timeline) or has_user_confirmation(timeline)
+
+    if VISUAL_CONTENT_CLAIM_RE.search(final_output) and not visual_evidence:
+        findings.append(
+            "The response claims visual page details, but this run has no textual browser evidence supporting those details."
+        )
+    if STRONG_VERIFICATION_CLAIM_RE.search(final_output) and not verification_evidence:
+        findings.append(
+            "The response claims verification or successful bug resolution, but this run has no recorded test/user-confirmed verification evidence."
+        )
+
+    audit_payload = {
+        "findings": findings,
+        "visual_evidence": visual_evidence,
+        "verification_evidence": verification_evidence,
+    }
+    if not findings:
+        return final_output, audit_payload
+
+    supported_facts: list[str] = []
+    for event in timeline:
+        if event.get("event_type") != "tool_result":
+            continue
+        payload = event.get("payload") or {}
+        tool_name = str(payload.get("tool") or "")
+        if tool_name in {"shell", "run_local_command", "agent-browser"}:
+            summary = summarize_tool_payload(payload).strip()
+            if summary:
+                supported_facts.append(summary)
+        if len(supported_facts) >= 4:
+            break
+
+    lines = [
+        "Runtime audit note: the draft response included claims that are not supported by recorded tool evidence.",
+        "",
+        "What is supported:",
+    ]
+    if supported_facts:
+        lines.extend(f"- {item}" for item in supported_facts[:4])
+    else:
+        lines.append("- Tool activity was recorded, but not enough evidence exists to support the original claims.")
+    lines.extend(
+        [
+            "",
+            "What remains unverified:",
+            *[f"- {item}" for item in findings],
+            "",
+            "Please treat any page-content description or fix-verification claim from this run as unverified.",
+        ]
+    )
+    return "\n".join(lines), audit_payload
+
+
 def update_task_status(task_id: str, *, status: str, active_agent_id: str | None = None, active_agent_name: str | None = None, participating_agents: list[str] | None = None, last_run_id: str | None = None, last_error: str | None = None) -> None:
     current = normalize_task(db.fetchone("SELECT * FROM task_sessions WHERE id = ?", (task_id,)))
     if not current:
@@ -2339,6 +2738,15 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
             )
         runtime_items.append(
             "Tool rule: when asked to inspect files, run commands, or check the local machine, use the available tools before answering."
+        )
+        runtime_items.append(
+            "Evidence rule: a screenshot file path or image artifact is not proof that you saw page contents. Only claim visual details when another tool returned textual page structure or content."
+        )
+        runtime_items.append(
+            "Verification rule: build or compile success is not runtime verification. Do not say a bug is fixed, tested, or verified unless a relevant test, browser interaction, or user confirmation actually occurred."
+        )
+        runtime_items.append(
+            "If evidence is incomplete, state exactly what was observed, what tool produced it, and what remains unverified."
         )
         runtime_items.append(
             f"Long-term memory: {'enabled' if MEMORY_ENABLED else 'disabled'}"
@@ -2697,7 +3105,8 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
                 image_bytes = image_path.read_bytes()
                 mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
                 image_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
-                body = f"{label}\nSaved to: {image_path}"
+                inspection = inspect_screenshot_artifact(image_path)
+                body = f"{label}\nSaved to: {image_path}\n\n{screenshot_semantic_notice()}"
                 log_tool_result(
                     task["id"],
                     run_id,
@@ -2713,6 +3122,8 @@ async def build_agents_runtime(task: dict[str, Any], run_id: str, current_input:
                         "session": browser_session,
                         "image_path": str(image_path),
                         "image_url": image_url,
+                        "inspection": inspection,
+                        "semantic_visual_evidence": False,
                     },
                 )
                 return body
@@ -3015,9 +3426,24 @@ async def run_task_execution(task_id: str, *, resume_run_id: str | None = None, 
             queue_task_channel_push(task, stage="approval", text=f"任务需要审批后才能继续，共有 {len(result.interruptions)} 个待审批动作。")
             return
 
-        final_output = str(result.final_output)
+        raw_final_output = str(result.final_output)
+        final_output, audit_payload = audit_final_output(task_id, run_id, raw_final_output)
+        if audit_payload.get("findings"):
+            log_timeline(
+                task_id,
+                "response_audit_flagged",
+                "Final response audit flagged unsupported claims",
+                run_id=run_id,
+                agent_id=task["entry_agent_id"],
+                agent_name=task["entry_agent_name"],
+                body="\n".join(audit_payload["findings"])[:500],
+                payload={
+                    "audit": audit_payload,
+                    "raw_final_output_preview": raw_final_output[:500],
+                },
+            )
         PENDING_RUNS.pop(run_id, None)
-        run_metadata = {}
+        run_metadata = {"response_audit": audit_payload}
         if not resume_run_id:
             run_metadata["context_summary"] = prompt_payload.get("context_summary", {})
         complete_run(run_id, "completed", final_output, run_metadata)
@@ -3092,6 +3518,11 @@ async def models_index() -> list[dict[str, Any]]:
     return list_models()
 
 
+@app.post("/models")
+async def models_create(payload: ModelWritePayload) -> dict[str, Any]:
+    return create_model(payload)
+
+
 @app.get("/settings")
 async def settings_show() -> dict[str, Any]:
     return current_settings()
@@ -3131,6 +3562,11 @@ async def channel_connections_patch(connection_id: str, payload: ChannelConnecti
 @app.get("/models/{model_key:path}")
 async def models_show(model_key: str) -> dict[str, Any]:
     return get_model(model_key)
+
+
+@app.patch("/models/{model_key:path}")
+async def models_patch(model_key: str, payload: ModelPatchPayload) -> dict[str, Any]:
+    return patch_model(model_key, payload)
 
 
 @app.post("/models/sync")

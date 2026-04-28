@@ -1,5 +1,5 @@
 import { runtimeFetch } from '@/shared/api/runtime-client'
-import type { AgentProfile, AppSettings, ChannelBinding, ChannelConnection, ModelRecord, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
+import type { AgentProfile, AppSettings, ChannelBinding, ChannelConnection, ModelRecord, ModelWritePayload, RuntimeHealth, SkillRecord, TaskSession } from '@/shared/types/runtime'
 
 import { mockAgents, mockChannelBindings, mockChannelConnections, mockHealth, mockModels, mockSkills, mockTasks } from '../lib/mock-data'
 
@@ -45,6 +45,27 @@ export function getSettings() {
 
 export function updateSettings(payload: AppSettings) {
   return runtimeFetch<AppSettings>('/settings', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function setDefaultModel(modelKey: string) {
+  return runtimeFetch<{ ok: boolean; default_model: string }>('/models/default', {
+    method: 'POST',
+    body: JSON.stringify({ model_key: modelKey }),
+  })
+}
+
+export function createModel(payload: ModelWritePayload) {
+  return runtimeFetch<ModelRecord>('/models', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateModel(modelKey: string, payload: Partial<ModelWritePayload>) {
+  return runtimeFetch<ModelRecord>(`/models/${modelKey}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
