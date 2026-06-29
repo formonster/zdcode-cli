@@ -2,19 +2,19 @@
 import { Command } from 'commander'
 import 'zx/globals'
 import packageJson from '../package.json'
-import channelsModule from './modules/channels'
+import asrModule from './modules/asr'
 import temp from './modules/hello'
-import devModule from './modules/dev'
-import feishuModule from './modules/feishu'
-import platformModule from './modules/platform'
+import modelModule from './modules/models'
+import videoModule from './modules/video'
+import imageDiff from './modules/image-diff'
 
 const program = new Command()
 
 temp(program)
-devModule(program)
-channelsModule(program)
-feishuModule(program)
-platformModule(program)
+asrModule(program)
+modelModule(program)
+videoModule(program)
+imageDiff(program)
 
 program.version(
   packageJson.version,
