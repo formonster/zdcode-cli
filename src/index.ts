@@ -7,6 +7,7 @@ import temp from './modules/hello'
 import modelModule from './modules/models'
 import videoModule from './modules/video'
 import imageDiff from './modules/image-diff'
+import agentsModule from './modules/agents'
 
 const program = new Command()
 
@@ -15,6 +16,7 @@ asrModule(program)
 modelModule(program)
 videoModule(program)
 imageDiff(program)
+agentsModule(program)
 
 program.version(
   packageJson.version,
