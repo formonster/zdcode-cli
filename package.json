@@ -22,7 +22,8 @@
   "files": [
     "dist",
     "dashboard",
-    "python_runtime"
+    "python_runtime",
+    "src/modules/asr/runtime"
   ],
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",
@@ -36,9 +37,12 @@
     "fs-extra": "^11.1.0",
     "glob": "^8.1.0",
     "inquirer": "9.1.4",
+    "koa": "^3.2.1",
     "lodash": "^4.17.21",
     "minimist": "^1.2.7",
     "node-notifier": "^10.0.1",
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
     "puppeteer": "^19.11.1",
     "source-map": "^0.7.4",
     "term-size": "^3.0.2",
@@ -49,9 +53,11 @@
     "@types/fs-extra": "^11.0.1",
     "@types/glob": "^8.0.1",
     "@types/inquirer": "^9.0.3",
+    "@types/koa": "^3.0.3",
     "@types/lodash": "^4.14.191",
     "@types/node": "^18.11.12",
     "@types/node-notifier": "^8.0.2",
+    "@types/pngjs": "^6.0.5",
     "tsup": "6.5.0",
     "typescript": "^4.9.4"
   }
