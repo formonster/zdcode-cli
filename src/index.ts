@@ -7,6 +7,7 @@ import temp from './modules/hello'
 import devModule from './modules/dev'
 import feishuModule from './modules/feishu'
 import platformModule from './modules/platform'
+import dedupModule from './modules/dedup'
 
 const program = new Command()
 
@@ -15,6 +16,7 @@ devModule(program)
 channelsModule(program)
 feishuModule(program)
 platformModule(program)
+dedupModule(program)
 
 program.version(
   packageJson.version,
