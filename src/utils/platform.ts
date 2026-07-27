@@ -1,4 +1,5 @@
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
@@ -44,3 +45,7 @@ export const getPackageRoot = () => {
   packageRoot ||= findPackageRoot()
   return packageRoot
 }
+
+export const getZdcodeHome = () => path.resolve(process.env.ZDCODE_HOME || path.join(os.homedir(), '.zdcode'))
+
+export const getZdcodeVenvPython = (name: string) => path.join(getZdcodeHome(), 'venvs', name, 'bin', 'python')

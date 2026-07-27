@@ -167,7 +167,7 @@ def dedup(
         if current_hash is None:
             continue  # skipped due to read error
 
-        distance = last_kept_hash - current_hash
+        distance = int(last_kept_hash - current_hash)
 
         if distance <= threshold:
             # Within threshold — potentially redundant
