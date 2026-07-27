@@ -6,6 +6,7 @@ import asrModule from './modules/asr'
 import temp from './modules/hello'
 import modelModule from './modules/models'
 import videoModule from './modules/video'
+import imageModule from './modules/image'
 import imageDiff from './modules/image-diff'
 import agentsModule from './modules/agents'
 import dedupModule from './modules/dedup'
@@ -16,6 +17,7 @@ temp(program)
 asrModule(program)
 modelModule(program)
 videoModule(program)
+imageModule(program)
 imageDiff(program)
 agentsModule(program)
 dedupModule(program)

@@ -66,6 +66,102 @@ const runGit = (args: string[], cwd?: string) => {
   })
 }
 
+const gitWorkingTreeIsDirty = (cwd: string) => {
+  return runCommandText('git', ['status', '--porcelain', '--untracked-files=all'], cwd).trim().length > 0
+}
+
+const readStashUntrackedFiles = (cwd: string, stashRef: string) => {
+  try {
+    return runCommandText('git', ['ls-tree', '-r', '--name-only', `${stashRef}^3`], cwd)
+      .split(/\r?\n/)
+      .map((file) => file.trim())
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+const workingFileMatches = (cwd: string, file: string, revision: string) => {
+  const filePath = path.join(cwd, file)
+  const treeEntry = runCommandText('git', ['ls-tree', revision, '--', file], cwd).trim()
+  const expectedHash = treeEntry.split(/\s+/, 3)[2]
+
+  if (!expectedHash) return !targetExists(filePath)
+  if (!targetExists(filePath)) return false
+  return runCommandText('git', ['hash-object', filePath], cwd).trim() === expectedHash
+}
+
+const stashChangesAlreadyPresent = (cwd: string, stashRef: string) => {
+  const trackedFiles = runCommandText('git', ['diff', '--name-only', `${stashRef}^1`, stashRef], cwd)
+    .split(/\r?\n/)
+    .map((file) => file.trim())
+    .filter(Boolean)
+
+  return (
+    trackedFiles.every((file) => workingFileMatches(cwd, file, stashRef)) &&
+    readStashUntrackedFiles(cwd, stashRef).every((file) => workingFileMatches(cwd, file, `${stashRef}^3`))
+  )
+}
+
+const dropCurrentStash = (cwd: string, stashRef: string) => {
+  const currentStashRef = runCommandText('git', ['rev-parse', '--verify', 'refs/stash'], cwd).trim()
+  if (currentStashRef !== stashRef) throw new Error('The temporary stash is no longer the latest stash entry.')
+  runGit(['stash', 'drop', 'stash@{0}'], cwd)
+}
+
+const updateGitRepo = (cwd: string) => {
+  if (!gitWorkingTreeIsDirty(cwd)) {
+    runGit(['pull', '--ff-only'], cwd)
+    return
+  }
+
+  const stashMessage = `zdcode agents update ${new Date().toISOString()}`
+  console.warn('Local changes detected; temporarily stashing tracked and untracked files.')
+  runGit(['stash', 'push', '--include-untracked', '--message', stashMessage], cwd)
+  const stashRef = runCommandText('git', ['rev-parse', '--verify', 'refs/stash'], cwd).trim()
+
+  let pullError: unknown
+  try {
+    runGit(['pull', '--ff-only'], cwd)
+  } catch (error) {
+    pullError = error
+  }
+
+  if (!pullError && stashChangesAlreadyPresent(cwd, stashRef)) {
+    dropCurrentStash(cwd, stashRef)
+    console.log('Local changes were already included by the update.')
+    return
+  }
+
+  try {
+    console.log('Restoring local changes.')
+    runGit(['stash', 'pop', '--index'], cwd)
+  } catch (restoreError) {
+    const remainingChanges = runCommandText('git', ['status', '--porcelain', '--untracked-files=all'], cwd).trim()
+    const untrackedTree = readStashUntrackedFiles(cwd, stashRef)
+    const redundantUntrackedFiles = untrackedTree.every((file) => {
+      const filePath = path.join(cwd, file)
+      if (!targetExists(filePath)) return false
+
+      const localHash = runCommandText('git', ['hash-object', filePath], cwd).trim()
+      const stashedHash = runCommandText('git', ['rev-parse', `${stashRef}^3:${file}`], cwd).trim()
+      return localHash === stashedHash
+    })
+
+    if (!remainingChanges && redundantUntrackedFiles) {
+      dropCurrentStash(cwd, stashRef)
+      console.log('Local changes were already included by the update.')
+      return
+    }
+
+    const detail = restoreError instanceof Error ? restoreError.message : String(restoreError)
+    const prefix = pullError ? 'Repository update failed and local changes could not be restored' : 'Local changes could not be restored'
+    throw new Error(`${prefix}: ${detail}. The stash was kept; run "git stash list" in ${cwd} to recover it.`)
+  }
+
+  if (pullError) throw pullError
+}
+
 const runCommand = (command: string, args: string[], cwd?: string) => {
   execFileSync(command, args, {
     cwd,
@@ -138,7 +234,7 @@ const ensureGitRepo = (options: { dir: string; url: string; update: boolean; lab
 
   if (options.update) {
     console.log(`Updating ${options.label} in ${options.dir}`)
-    runGit(['pull', '--ff-only'], options.dir)
+    updateGitRepo(options.dir)
   } else {
     console.log(`${options.label} already exists: ${options.dir}`)
   }
