@@ -1,11 +1,10 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { Command } from 'commander'
+import { readZdcodeEnv, ZDCODE_ENV_PATH } from '../../utils/zdcode-env'
 
 const DEFAULT_API_URL = 'https://ea-n-qu153.xin-zhi-zhu.com'
 const DEFAULT_MODEL = 'gpt-image-2'
-const ENV_PATH = path.join(os.homedir(), '.zdcode', '.env')
 const RESPONSE_PREVIEW_LIMIT = 2000
 
 type ImageOptions = {
@@ -72,26 +71,6 @@ const errorDetails = (error: unknown) => {
   return `${error.message}: ${causeText}`
 }
 
-const readEnv = () => {
-  if (!fs.existsSync(ENV_PATH)) {
-    throw new Error(`API key file not found: ${ENV_PATH}`)
-  }
-
-  return Object.fromEntries(
-    fs.readFileSync(ENV_PATH, 'utf-8')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#'))
-      .map((line) => {
-        const index = line.indexOf('=')
-        if (index < 0) return [line, '']
-        const key = line.slice(0, index).trim()
-        const value = line.slice(index + 1).trim().replace(/^['"]|['"]$/g, '')
-        return [key, value]
-      })
-  )
-}
-
 const normalizeApiUrl = (value: string) => {
   const url = value.trim().replace(/\/+$/, '')
   if (url.endsWith('/images/generations')) return url
@@ -100,7 +79,7 @@ const normalizeApiUrl = (value: string) => {
 }
 
 const imageConfig = (options: ImageOptions) => {
-  const env = readEnv()
+  const env = readZdcodeEnv()
   return {
     apiKey: env.IMAGE_API_KEY,
     apiUrl: normalizeApiUrl(options.apiUrl || env.IMAGE_API_URL || DEFAULT_API_URL),
@@ -145,7 +124,7 @@ const generateImage = async (prompt: string, options: ImageOptions) => {
   const images = (options.image || []).map(normalizeInputImage)
   const config = imageConfig(options)
   if (!config.apiKey) {
-    throw new Error(`Missing IMAGE_API_KEY in ${ENV_PATH}`)
+    throw new Error(`Missing IMAGE_API_KEY in ${ZDCODE_ENV_PATH}`)
   }
 
   const body: Record<string, unknown> = {

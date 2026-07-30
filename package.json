@@ -11,6 +11,7 @@
     "prepublish": "pnpm run build",
     "build": "tsup",
     "test:feishu": "pnpm run build && node ./scripts/test-feishu.mjs",
+    "test:video": "pnpm run build && node ./scripts/test-video.mjs",
     "runtime:serve": "node ./dist/index.js runtime serve"
   },
   "keywords": [],
