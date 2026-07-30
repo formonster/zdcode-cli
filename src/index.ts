@@ -5,7 +5,6 @@ import packageJson from '../package.json'
 import asrModule from './modules/asr'
 import temp from './modules/hello'
 import modelModule from './modules/models'
-import videoModule from './modules/video'
 import imageModule from './modules/image'
 import imageDiff from './modules/image-diff'
 import agentsModule from './modules/agents'
@@ -16,7 +15,6 @@ const program = new Command()
 temp(program)
 asrModule(program)
 modelModule(program)
-videoModule(program)
 imageModule(program)
 imageDiff(program)
 agentsModule(program)
