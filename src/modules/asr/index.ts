@@ -3,7 +3,7 @@ import path from 'path'
 import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { Command } from 'commander'
-import { getPackageRoot } from '../../utils/platform'
+import { getPackageRoot, getZdcodeVenvPython } from '../../utils/platform'
 
 export type TranscribeOptions = {
   audio: string
@@ -148,12 +148,12 @@ const registerAsrModule = (program: Command) => {
   asr
     .command('serve')
     .description('启动内置 FunASR 转写服务')
-    .option('--python <path>', 'Python 解释器路径', process.env.ZDCODE_ASR_PYTHON || 'python3')
+    .option('--python <path>', 'Python 解释器路径', process.env.ZDCODE_ASR_PYTHON || getZdcodeVenvPython('asr'))
     .option('--host <host>', '监听地址', '127.0.0.1')
     .option('--port <port>', '监听端口', '8766')
     .action((options: ServeOptions) => {
       const serverPath = findRuntimeServer()
-      const result = spawnSync(options.python || 'python3', [serverPath], {
+      const result = spawnSync(options.python || getZdcodeVenvPython('asr'), [serverPath], {
         cwd: path.dirname(serverPath),
         stdio: 'inherit',
         env: {

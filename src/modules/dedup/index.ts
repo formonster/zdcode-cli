@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { Command } from 'commander'
+import { getZdcodeVenvPython } from '../../utils/platform'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -27,6 +28,7 @@ function findProjectRoot(): string {
 const DEDUP_SCRIPT = path.join(findProjectRoot(), 'src', 'modules', 'dedup', 'dedup.py')
 
 type DedupOptions = {
+  python?: string
   threshold?: string
   vlm?: boolean
   vlmThreshold?: string
@@ -39,6 +41,7 @@ const registerDedup = (program: Command) => {
     .command('dedup')
     .description('关键帧去重 — 基于 dHash + 可选本地 minicpm-v 复核')
     .argument('<folder>', '图片文件夹路径（必填）')
+    .option('--python <path>', 'Python 解释器路径', process.env.ZDCODE_DEDUP_PYTHON || getZdcodeVenvPython('dedup'))
     .option('--threshold <n>', 'dHash 汉明距离阈值，低于此值判定为冗余 (默认 5)', '5')
     .option('--vlm', '启用 VLM 复核（使用本地 Ollama minicpm-v 模型）')
     .option('--vlm-threshold <n>', 'VLM 复核灰区上限 (默认 3)', '3')
@@ -65,7 +68,7 @@ const registerDedup = (program: Command) => {
       }
 
       try {
-        const cmd = ['python3', ...args].map(a => `"${a}"`).join(' ')
+        const cmd = [options.python || getZdcodeVenvPython('dedup'), ...args].map(a => `"${a}"`).join(' ')
         const result = execSync(cmd, {
           encoding: 'utf-8',
           stdio: ['inherit', 'pipe', 'inherit'],
