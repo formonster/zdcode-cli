@@ -10,6 +10,7 @@ import videoModule from './modules/video'
 import imageDiff from './modules/image-diff'
 import agentsModule from './modules/agents'
 import dedupModule from './modules/dedup'
+import agensModule from './modules/agens'
 
 const program = new Command()
 
@@ -21,6 +22,7 @@ videoModule(program)
 imageDiff(program)
 agentsModule(program)
 dedupModule(program)
+agensModule(program)
 
 program.version(
   packageJson.version,
