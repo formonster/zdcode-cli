@@ -1,6 +1,6 @@
 export const DEFAULT_API_URL = 'https://apihub.agnes-ai.com/v1'
 export const DEFAULT_IMAGE_MODEL = 'agnes-image-2.5-flash'
-export const DEFAULT_VIDEO_MODEL = 'agnes-video-2.5'
+export const DEFAULT_VIDEO_MODEL = 'agnes-video-2.5-flash'
 export const DEFAULT_IMAGE_SIZE = '2K'
 export const DEFAULT_IMAGE_RATIO = '1:1'
 export const DEFAULT_VIDEO_SECONDS = '5'
