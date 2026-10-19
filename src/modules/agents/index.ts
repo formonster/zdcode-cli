@@ -8,28 +8,7 @@ const AGENTS_REPO_URL = 'https://github.com/formonster/zdcode-agents.git'
 const agentsRoot = path.resolve(os.homedir(), '.zdcode', 'agents')
 const extensionsRoot = path.resolve(os.homedir(), '.zdcode', 'extensions')
 
-const candidateDirs = [
-  {
-    name: 'Claude Code',
-    appRoot: path.resolve(os.homedir(), '.claude'),
-    dir: path.resolve(os.homedir(), '.claude', 'skills'),
-  },
-  {
-    name: 'Codex',
-    appRoot: path.resolve(os.homedir(), '.codex'),
-    dir: path.resolve(os.homedir(), '.codex', 'skills'),
-  },
-  {
-    name: 'Hermes',
-    appRoot: path.resolve(os.homedir(), '.hermes'),
-    dir: path.resolve(os.homedir(), '.hermes', 'skills'),
-  },
-  {
-    name: 'Pi',
-    appRoot: path.resolve(os.homedir(), '.pi'),
-    dir: path.resolve(os.homedir(), '.pi', 'agent', 'skills'),
-  },
-]
+const sharedSkillsDir = path.resolve(os.homedir(), '.agents', 'skills')
 
 const extensionRepos = [
   {
@@ -300,33 +279,26 @@ const syncSkills = () => {
   const skills = readSkillEntries()
   const activeSkillNames = new Set(skills.map((skill) => skill.name))
 
-  for (const candidate of candidateDirs) {
-    if (!targetExists(candidate.appRoot)) {
-      console.log(`Skip ${candidate.name}: ${candidate.appRoot} does not exist`)
+  fs.mkdirSync(sharedSkillsDir, { recursive: true })
+  console.log(`Sync skills: ${sharedSkillsDir}`)
+  removeStaleManagedSkillLinks(sharedSkillsDir, activeSkillNames)
+
+  for (const skill of skills) {
+    const linkPath = path.join(sharedSkillsDir, skill.name)
+
+    if (!exists(linkPath)) {
+      fs.symlinkSync(skill.source, linkPath, 'dir')
+      console.log(`  linked ${skill.name}`)
       continue
     }
 
-    fs.mkdirSync(candidate.dir, { recursive: true })
-    console.log(`Sync ${candidate.name}: ${candidate.dir}`)
-    removeStaleManagedSkillLinks(candidate.dir, activeSkillNames)
-
-    for (const skill of skills) {
-      const linkPath = path.join(candidate.dir, skill.name)
-
-      if (!exists(linkPath)) {
-        fs.symlinkSync(skill.source, linkPath, 'dir')
-        console.log(`  linked ${skill.name}`)
-        continue
-      }
-
-      const stat = fs.lstatSync(linkPath)
-      if (stat.isSymbolicLink() && sameSymlinkTarget(linkPath, skill.source)) {
-        console.log(`  ok ${skill.name}`)
-        continue
-      }
-
-      console.warn(`  skip ${skill.name}: ${linkPath} already exists and is not managed by zdcode`)
+    const stat = fs.lstatSync(linkPath)
+    if (stat.isSymbolicLink() && sameSymlinkTarget(linkPath, skill.source)) {
+      console.log(`  ok ${skill.name}`)
+      continue
     }
+
+    console.warn(`  skip ${skill.name}: ${linkPath} already exists and is not managed by zdcode`)
   }
 }
 
@@ -529,11 +501,11 @@ const runAgentsInit = (options: { update: boolean }) => {
 }
 
 const registerAgentsModule = (program: Command) => {
-  const agents = program.command('agents').description('管理 zdcode agents 技能仓库与本机 Agent 应用软链')
+  const agents = program.command('agents').description('管理 zdcode agents 技能仓库与 ~/.agents/skills 技能软链')
 
   agents
     .command('init')
-    .description('初始化 ~/.zdcode/agents 仓库，并同步技能软链')
+    .description('初始化 ~/.zdcode/agents 仓库，并同步技能软链到 ~/.agents/skills')
     .action(() => {
       try {
         runAgentsInit({ update: false })
@@ -545,7 +517,7 @@ const registerAgentsModule = (program: Command) => {
 
   agents
     .command('update')
-    .description('更新 ~/.zdcode/agents 仓库，并刷新技能软链')
+    .description('更新 ~/.zdcode/agents 仓库，并刷新 ~/.agents/skills 技能软链')
     .action(() => {
       try {
         runAgentsInit({ update: true })
