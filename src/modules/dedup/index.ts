@@ -4,6 +4,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { Command } from 'commander'
 import { getZdcodeVenvPython } from '../../utils/platform'
+import { ensureVenv } from '../../utils/venv'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -48,6 +49,11 @@ const registerDedup = (program: Command) => {
     .option('--dry-run', '仅预览，不实际删除文件')
     .option('--quiet', '静默模式，仅输出 JSON 结果')
     .action(async (folder: string, options: DedupOptions) => {
+      const managedPython = getZdcodeVenvPython('dedup')
+      const python = options.python || managedPython
+      if (python === managedPython) {
+        ensureVenv('dedup', path.join(path.dirname(DEDUP_SCRIPT), 'dedup_requirements.txt'))
+      }
       const args = [
         DEDUP_SCRIPT,
         folder,
@@ -68,7 +74,7 @@ const registerDedup = (program: Command) => {
       }
 
       try {
-        const cmd = [options.python || getZdcodeVenvPython('dedup'), ...args].map(a => `"${a}"`).join(' ')
+        const cmd = [python, ...args].map(a => `"${a}"`).join(' ')
         const result = execSync(cmd, {
           encoding: 'utf-8',
           stdio: ['inherit', 'pipe', 'inherit'],

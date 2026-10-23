@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { Command } from 'commander'
 import { getPackageRoot, getZdcodeVenvPython } from '../../utils/platform'
+import { ensureVenv } from '../../utils/venv'
 
 export type TranscribeOptions = {
   audio: string
@@ -153,7 +154,12 @@ const registerAsrModule = (program: Command) => {
     .option('--port <port>', '监听端口', '8766')
     .action((options: ServeOptions) => {
       const serverPath = findRuntimeServer()
-      const result = spawnSync(options.python || getZdcodeVenvPython('asr'), [serverPath], {
+      const managedPython = getZdcodeVenvPython('asr')
+      const python = options.python || managedPython
+      if (python === managedPython) {
+        ensureVenv('asr', path.join(path.dirname(serverPath), 'funasr_requirements.txt'))
+      }
+      const result = spawnSync(python, [serverPath], {
         cwd: path.dirname(serverPath),
         stdio: 'inherit',
         env: {

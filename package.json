@@ -24,7 +24,10 @@
     "dist",
     "dashboard",
     "python_runtime",
-    "src/modules/asr/runtime"
+    "src/modules/asr/runtime",
+    "src/modules/audio/runtime",
+    "src/modules/tts/runtime",
+    "src/modules/tts/requirements"
   ],
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",

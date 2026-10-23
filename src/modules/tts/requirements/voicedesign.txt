@@ -1,0 +1,6 @@
+# VoiceDesign (Qwen3-TTS-12Hz-1.7B-VoiceDesign) 运行依赖
+# Python 3.12 / macOS arm64（Apple Silicon，走 MPS）
+# 首次运行时由 `zdcode tts design` 自动安装到 ~/.zdcode/venvs/qwen-tts
+torch==2.14.1
+torchaudio==2.11.0
+qwen-tts==0.1.1

@@ -132,7 +132,9 @@ const formatTaskError = (error: VideoTask['error']) => {
   return details.length ? details.join(': ') : JSON.stringify(error)
 }
 
-const waitForVideoTask = async (
+export type GeneratedVideo = { videoId: string; url: string; filePath?: string }
+
+export const waitForVideoTask = async (
   apiUrl: string,
   apiKey: string,
   videoId: string,
@@ -154,8 +156,9 @@ const waitForVideoTask = async (
         const filePath = path.resolve(options.out)
         await downloadFile(filePath, url)
         console.log(`✅ Video written: ${filePath}`)
+        return { videoId, url, filePath }
       }
-      return
+      return { videoId, url }
     }
     if (status === 'failed') {
       throw new Error(`Agens video task ${videoId} failed: ${formatTaskError(task.error)}`)
@@ -176,7 +179,10 @@ const waitForVideoTask = async (
   )
 }
 
-const generateVideo = async (prompt: string | undefined, options: AgensVideoOptions) => {
+export const generateVideo = async (
+  prompt: string | undefined,
+  options: AgensVideoOptions,
+): Promise<GeneratedVideo> => {
   const config = agensVideoConfig(options)
   if (!config.apiKey) throw new Error(missingApiKeyError('AGNES_VIDEO_API_KEY'))
 
@@ -193,7 +199,7 @@ const generateVideo = async (prompt: string | undefined, options: AgensVideoOpti
     console.log(`video_id=${videoId}`)
   }
 
-  await waitForVideoTask(config.apiUrl, config.apiKey, videoId, config.model, options)
+  return waitForVideoTask(config.apiUrl, config.apiKey, videoId, config.model, options)
 }
 
 export const registerAgensVideo = (agens: Command) => {
@@ -214,8 +220,8 @@ export const registerAgensVideo = (agens: Command) => {
     .option('--task-id <videoId>', '跳过提交，继续查询已有任务')
     .option('--poll-interval <seconds>', '查询间隔秒数', String(DEFAULT_POLL_INTERVAL_SECONDS))
     .option('--timeout <seconds>', '最长等待秒数', String(DEFAULT_TIMEOUT_SECONDS))
-    .option('--api-url <url>', 'Agnes API base URL', DEFAULT_API_URL)
-    .option('--model <model>', '视频模型', DEFAULT_VIDEO_MODEL)
+    .option('--api-url <url>', `Agnes API base URL（默认 ${DEFAULT_API_URL}，可用 AGNES_API_URL 覆盖）`)
+    .option('--model <model>', `视频模型（默认 ${DEFAULT_VIDEO_MODEL}，可用 AGNES_VIDEO_MODEL 覆盖）`)
     .action(async (prompt: string | undefined, options: AgensVideoOptions) => {
       try {
         await generateVideo(prompt, options)

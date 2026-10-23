@@ -11,6 +11,10 @@ import imageDiff from './modules/image-diff'
 import agentsModule from './modules/agents'
 import dedupModule from './modules/dedup'
 import agensModule from './modules/agens'
+import ttsModule from './modules/tts'
+import audioModule from './modules/audio'
+import serveModule from './modules/serve'
+import dbModule from './modules/db'
 
 const program = new Command()
 
@@ -23,6 +27,10 @@ imageDiff(program)
 agentsModule(program)
 dedupModule(program)
 agensModule(program)
+ttsModule(program)
+audioModule(program)
+serveModule(program)
+dbModule(program)
 
 program.version(
   packageJson.version,

@@ -48,4 +48,10 @@ export const getPackageRoot = () => {
 
 export const getZdcodeHome = () => path.resolve(process.env.ZDCODE_HOME || path.join(os.homedir(), '.zdcode'))
 
-export const getZdcodeVenvPython = (name: string) => path.join(getZdcodeHome(), 'venvs', name, 'bin', 'python')
+export const getZdcodeVenvDir = (name: string) => path.join(getZdcodeHome(), 'venvs', name)
+
+export const getZdcodeVenvPython = (name: string) => path.join(getZdcodeVenvDir(name), 'bin', 'python')
+
+export const getZdcodeModelsDir = () => path.join(getZdcodeHome(), 'models')
+
+export const getZdcodeTtsDir = () => path.join(getZdcodeHome(), 'tts')

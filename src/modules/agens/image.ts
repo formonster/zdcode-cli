@@ -19,7 +19,12 @@ import {
   writeBase64File,
 } from './utils'
 
-const generateImage = async (prompt: string, options: AgensImageOptions) => {
+export type GeneratedAgensImage = { filePath?: string; url?: string }
+
+export const generateAgensImage = async (
+  prompt: string,
+  options: AgensImageOptions,
+): Promise<GeneratedAgensImage> => {
   const config = agensImageConfig(options)
   if (!config.apiKey) throw new Error(missingApiKeyError('AGNES_IMAGE_API_KEY'))
 
@@ -68,16 +73,17 @@ const generateImage = async (prompt: string, options: AgensImageOptions) => {
       const filePath = path.resolve(options.out)
       await downloadFile(filePath, item.url)
       console.log(`✅ Image written: ${filePath}`)
-    } else {
-      console.log(item.url)
+      return { filePath, url: item.url }
     }
-    return
+    console.log(item.url)
+    return { url: item.url }
   }
 
   if (!item.b64_json) throw new Error('Agens image request returned no base64 image.')
   const filePath = outputPath(options.out)
   writeBase64File(filePath, item.b64_json)
   console.log(`✅ Image written: ${filePath}`)
+  return { filePath }
 }
 
 export const registerAgensImage = (agens: Command) => {
@@ -89,11 +95,11 @@ export const registerAgensImage = (agens: Command) => {
     .option('--format <format>', 'url | b64_json', 'url')
     .option('--image <image>', '输入图像 URL 或本地文件路径，可重复', collect, [])
     .option('-o, --out <path>', '输出图片路径')
-    .option('--api-url <url>', 'Agnes API base URL', DEFAULT_API_URL)
-    .option('--model <model>', '图像模型', DEFAULT_IMAGE_MODEL)
+    .option('--api-url <url>', `Agnes API base URL（默认 ${DEFAULT_API_URL}，可用 AGNES_API_URL 覆盖）`)
+    .option('--model <model>', `图像模型（默认 ${DEFAULT_IMAGE_MODEL}，可用 AGNES_IMAGE_MODEL 覆盖）`)
     .action(async (prompt: string, options: AgensImageOptions) => {
       try {
-        await generateImage(prompt, options)
+        await generateAgensImage(prompt, options)
       } catch (error) {
         console.error(`❌ ${error instanceof Error ? error.message : String(error)}`)
         process.exitCode = 1
